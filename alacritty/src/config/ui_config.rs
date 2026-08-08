@@ -34,6 +34,7 @@ use crate::config::scrolling::Scrolling;
 use crate::config::selection::Selection;
 use crate::config::terminal::Terminal;
 use crate::config::window::WindowConfig;
+use crate::config::voice::Voice;
 
 /// Regex used for the default URL hint.
 #[rustfmt::skip]
@@ -71,6 +72,9 @@ pub struct UiConfig {
 
     /// Bell configuration.
     pub bell: BellConfig,
+
+    /// Voice action configuration.
+    pub voice: Voice,
 
     /// RGB values for colors.
     pub colors: Colors,

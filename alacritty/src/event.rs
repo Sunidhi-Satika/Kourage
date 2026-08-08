@@ -1480,6 +1480,10 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.config
     }
 
+    fn event_proxy(&self) -> &EventLoopProxy<Event> {
+        self.event_proxy
+    }
+
     #[cfg(target_os = "macos")]
     fn event_loop(&self) -> &ActiveEventLoop {
         self.event_loop

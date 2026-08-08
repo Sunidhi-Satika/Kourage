@@ -21,6 +21,7 @@ use winit::event::{
 };
 #[cfg(target_os = "macos")]
 use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::EventLoopProxy;
 use winit::keyboard::ModifiersState;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::ActiveEventLoopExtMacOS;
@@ -47,6 +48,7 @@ use crate::event::{
 };
 use crate::message_bar::{self, Message};
 use crate::scheduler::{Scheduler, TimerId, Topic};
+use crate::voice;
 
 pub mod keyboard;
 
@@ -106,6 +108,7 @@ pub trait ActionContext<T: EventListener> {
     fn pop_message(&mut self) {}
     fn message(&self) -> Option<&Message>;
     fn config(&self) -> &UiConfig;
+    fn event_proxy(&self) -> &EventLoopProxy<Event>;
     #[cfg(target_os = "macos")]
     fn event_loop(&self) -> &ActiveEventLoop;
     fn mouse_mode(&self) -> bool;
@@ -176,6 +179,10 @@ impl<T: EventListener> Execute<T> for Action {
             Action::ToggleViMode => {
                 ctx.on_typing_start();
                 ctx.toggle_vi_mode()
+            },
+            Action::VoiceCommand => {
+                let window_id = ctx.window().id();
+                voice::handle_voice_command(ctx.config(), ctx.event_proxy(), window_id)
             },
             action @ (Action::ViMotion(_) | Action::Vi(_))
                 if !ctx.terminal().mode().contains(TermMode::VI) =>
@@ -1250,6 +1257,10 @@ mod tests {
 
         fn config(&self) -> &UiConfig {
             self.config
+        }
+
+        fn event_proxy(&self) -> &EventLoopProxy<Event> {
+            unimplemented!();
         }
 
         fn clipboard_mut(&mut self) -> &mut Clipboard {

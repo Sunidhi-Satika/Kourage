@@ -23,6 +23,7 @@ pub mod serde_utils;
 pub mod terminal;
 pub mod ui_config;
 pub mod window;
+pub mod voice;
 
 mod bindings;
 mod mouse;

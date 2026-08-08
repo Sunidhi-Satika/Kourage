@@ -238,6 +238,9 @@ pub enum Action {
     /// Toggle vi mode.
     ToggleViMode,
 
+    /// Trigger voice command input.
+    VoiceCommand,
+
     /// Allow receiving char input.
     ReceiveChar,
 
@@ -549,6 +552,7 @@ fn common_keybindings() -> Vec<KeyBinding> {
         "-",    ModifiersState::CONTROL;                                                                 Action::DecreaseFontSize;
         "+" => KeyLocation::Numpad, ModifiersState::CONTROL;                                             Action::IncreaseFontSize;
         "-" => KeyLocation::Numpad, ModifiersState::CONTROL;                                             Action::DecreaseFontSize;
+        "s",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::VI, ~BindingMode::SEARCH; Action::VoiceCommand;
     )
 }
 

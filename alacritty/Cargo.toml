@@ -23,10 +23,15 @@ path = "../alacritty_config"
 version = "0.2.4-dev"
 
 [dependencies]
+whisper-rs = { version = "0.15.1" }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+hound = "3.5.0"
+anyhow = "1.0"
 ahash = { version = "0.8.6", features = ["no-rng"] }
 bitflags = "2.2.1"
 clap = { version = "4.2.7", features = ["derive", "env"] }
 copypasta = { version = "0.10.1", default-features = false }
+cpal = "0.15.3"
 crossfont = "0.8.1"
 glutin = { version = "0.32.2", default-features = false, features = ["egl", "wgl"] }
 home = "0.5.5"

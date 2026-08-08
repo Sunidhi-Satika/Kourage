@@ -46,6 +46,7 @@ mod panic;
 mod renderer;
 mod scheduler;
 mod string;
+mod voice;
 mod window_context;
 
 mod gl {
@@ -141,6 +142,9 @@ fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
 
     info!("Welcome to Alacritty");
     info!("Version {}", env!("VERSION"));
+
+    // Initialize voice module.
+    voice::init();
 
     #[cfg(all(feature = "x11", not(any(target_os = "macos", windows))))]
     info!(

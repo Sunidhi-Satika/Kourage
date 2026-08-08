@@ -1,114 +1,145 @@
 <p align="center">
-    <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
+    <img width="180" alt="Alacritty AI Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator</h1>
+<h1 align="center">Alacritty AI — Intelligent, Voice-Enabled Terminal Emulator</h1>
 
 <p align="center">
-  <img alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"
-       src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/promo/alacritty-readme.png">
+  <strong>Blazing fast GPU-accelerated terminal with 100% local Voice-to-Command & on-device LLM intelligence.</strong>
 </p>
 
-## About
+<p align="center">
+  <img src="https://img.shields.io/badge/Language-Rust-orange.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/Inference-100%25%20Local-success.svg" alt="Local AI">
+  <img src="https://img.shields.io/badge/STT-Whisper.cpp%20(Offline)-blue.svg" alt="Whisper STT">
+  <img src="https://img.shields.io/badge/LLM-Ollama%20%2F%20llama.cpp-purple.svg" alt="Ollama">
+  <img src="https://img.shields.io/badge/GPU%20Renderer-OpenGL-green.svg" alt="OpenGL">
+  <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
+</p>
 
-Alacritty is a modern terminal emulator that comes with sensible defaults, but
-allows for extensive [configuration](#configuration). By integrating with other
-applications, rather than reimplementing their functionality, it manages to
-provide a flexible set of [features](./docs/features.md) with high performance.
-The supported platforms currently consist of BSD, Linux, macOS and Windows.
+---
 
-The software is considered to be at a **beta** level of readiness; there are
-a few missing features and bugs to be fixed, but it is already used by many as
-a daily driver.
+## ⚡ What is Alacritty AI?
 
-Precompiled binaries are available from the [GitHub releases page](https://github.com/alacritty/alacritty/releases).
+**Alacritty AI** is a fork of the ultra-fast, OpenGL-accelerated [Alacritty](https://github.com/alacritty/alacritty) terminal that adds **embedded voice commands and local natural language understanding**.
 
-Join [`#alacritty`] on libera.chat if you have questions or looking for a quick help.
+Instead of typing long, complex shell commands or remembering obscure flags, you can simply **speak or express your intent in plain English**, and the built-in AI pipeline translates it into executable shell commands directly in your active terminal session.
 
-[`#alacritty`]: https://web.libera.chat/gamja/?channels=#alacritty
+> [!IMPORTANT]
+> **100% Privacy & Zero Cloud Dependency**: Speech recognition runs entirely on your CPU/GPU using Whisper GGML models, and language generation connects to local LLM daemons (e.g. Ollama). No voice audio or command data ever leaves your computer.
 
-## Features
+---
 
-You can find an overview over the features available in Alacritty [here](./docs/features.md).
+## 🌟 Key Features
 
-## Further information
+- 🎙️ **Hands-Free Voice-to-Command**: Press `Ctrl+Shift+S` and speak naturally (e.g., *"show all hidden files sorted by modification time"*).
+- 🧠 **Local LLM Intent Parsing**: Automatically turns natural language into valid shell commands (`ls -lat`) using local models like `qwen2.5-coder` or `llama3`.
+- 🔇 **Smart RMS Silence Detection**: Automatically detects when you stop speaking and begins transcription with zero manual cutoffs.
+- ⚡ **Pure High-Performance Rust**: Non-blocking asynchronous worker threads ensure that voice and LLM processing never freeze Alacritty's 60+ FPS GPU render loop.
+- 🔒 **Safe & Offline**: No API keys, no subscriptions, and no internet connection required.
 
-- [Announcing Alacritty, a GPU-Accelerated Terminal Emulator](https://jwilm.io/blog/announcing-alacritty/) January 6, 2017
-- [A talk about Alacritty at the Rust Meetup January 2017](https://www.youtube.com/watch?v=qHOdYO3WUTk) January 19, 2017
-- [Alacritty Lands Scrollback, Publishes Benchmarks](https://jwilm.io/blog/alacritty-lands-scrollback/) September 17, 2018
+---
 
-## Installation
+## 🔄 How It Works
 
-Alacritty can be installed by using various package managers on Linux, BSD,
-macOS and Windows.
+```
++-------------------+       +-----------------------+       +----------------------+
+| 🎙️  Microphone     | ----> | 🔊 Whisper STT Engine  | ----> | 🧠  Local LLM Server  |
+| (cpal capture)    |       | (whisper-rs / GGML)   |       | (Ollama / REST API)  |
++-------------------+       +-----------------------+       +----------------------+
+                                                                        |
+                                                                        v
+                                                            +----------------------+
+                                                            | 💻  Alacritty PTY    |
+                                                            | (Automatic Execution)|
+                                                            +----------------------+
+```
 
-Prebuilt binaries for macOS and Windows can also be downloaded from the
-[GitHub releases page](https://github.com/alacritty/alacritty/releases).
+1. **Trigger**: You press `Ctrl+Shift+S`.
+2. **Record**: `cpal` captures audio from your microphone with RMS silence detection.
+3. **Transcribe**: `whisper-rs` transcribes speech into text using local GGML Whisper weights.
+4. **Translate**: The transcribed text is sent to your local LLM daemon (e.g. `http://localhost:11434`).
+5. **Execute**: The generated shell command is written straight into the terminal PTY.
 
-For everyone else, the detailed instructions to install Alacritty can be found
-[here](INSTALL.md).
+---
 
-### Requirements
+## 🚀 Quick Start Guide
 
-- At least OpenGL ES 2.0
-- [Windows] ConPTY support (Windows 10 version 1809 or higher)
+### 1. Prerequisites
 
-## Configuration
+Make sure the native system audio and build tools are installed:
 
-You can find the documentation for Alacritty's configuration in `man 5
-alacritty`, or by looking at [the website] if you do not have the manpages
-installed.
+```bash
+# Ubuntu / Debian
+sudo apt install -y libasound2-dev libopenblas-dev libclang-dev cmake pkg-config fontconfig
+```
 
-[the website]: https://alacritty.org/config-alacritty.html
+### 2. Download a Local Whisper Model
 
-Alacritty doesn't create the config file for you, but it looks for one in the
-following locations:
+Download a compact GGML model (e.g. `tiny` or `base`):
 
-1. `$XDG_CONFIG_HOME/alacritty/alacritty.toml`
-2. `$XDG_CONFIG_HOME/alacritty.toml`
-3. `$HOME/.config/alacritty/alacritty.toml`
-4. `$HOME/.alacritty.toml`
-5. `/etc/alacritty/alacritty.toml`
+```bash
+mkdir -p ~/.config/alacritty/models
+wget -O ~/.config/alacritty/models/ggml-tiny.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+```
 
-On Windows, the config file will be looked for in:
+### 3. Start your Local LLM (Ollama)
 
-* `%APPDATA%\alacritty\alacritty.toml`
+Make sure [Ollama](https://ollama.com) is installed and running:
 
-## Contributing
+```bash
+ollama run llama3 # or: ollama run qwen2.5-coder:3b
+```
 
-A guideline about contributing to Alacritty can be found in the
-[`CONTRIBUTING.md`](CONTRIBUTING.md) file.
+### 4. Configure Alacritty
 
-## FAQ
+Add the `[voice]` section to your `alacritty.toml` (located at `~/.config/alacritty/alacritty.toml`):
 
-**_Is it really the fastest terminal emulator?_**
+```toml
+[voice]
+whisper_model_path = "~/.config/alacritty/models/ggml-tiny.bin"
+llm_api_url = "http://localhost:11434/api/generate"
+```
 
-Benchmarking terminal emulators is complicated. Alacritty uses
-[vtebench](https://github.com/alacritty/vtebench) to quantify terminal emulator
-throughput and manages to consistently score better than the competition using
-it. If you have found an example where this is not the case, please report a
-bug.
+### 5. Build and Run
 
-Other aspects like latency or framerate and frame consistency are more difficult
-to quantify. Some terminal emulators also intentionally slow down to save
-resources, which might be preferred by some users.
+```bash
+# Clone the repository
+git clone https://github.com/Sunidhi-Satika/alacritty.git
+cd alacritty
 
-If you have doubts about Alacritty's performance or usability, the best way to
-quantify terminal emulators is always to test them with **your** specific
-usecases.
+# Build & launch
+cargo run --release --bin alacritty
+```
 
-**_Why isn't feature X implemented?_**
+Press **`Ctrl+Shift+S`**, speak your command, and watch the terminal execute it!
 
-Alacritty has many great features, but not every feature from every other
-terminal. This could be for a number of reasons, but sometimes it's just not a
-good fit for Alacritty. This means you won't find things like tabs or splits
-(which are best left to a window manager or [terminal multiplexer][tmux]) nor
-niceties like a GUI config editor.
+---
 
-[tmux]: https://github.com/tmux/tmux
+## ⌨️ Default Keybindings
 
-## License
+| Keybinding | Action | Description |
+| :--- | :--- | :--- |
+| `Ctrl + Shift + S` | `VoiceCommand` | Starts microphone recording and executes transcribed AI command |
+| `Ctrl + Shift + +` | `IncreaseFontSize` | Increase terminal font size |
+| `Ctrl + Shift + -` | `DecreaseFontSize` | Decrease terminal font size |
+| `Ctrl + Shift + Space` | *Prompt Overlay (Coming Soon)* | Opens inline natural language text prompt |
 
-Alacritty is released under the [Apache License, Version 2.0].
+---
 
-[Apache License, Version 2.0]: https://github.com/alacritty/alacritty/blob/master/LICENSE-APACHE
+## 🗺️ Roadmap & In-Development Features
+
+- [x] Local voice capture with silence auto-cutoff (`cpal`)
+- [x] Local Speech-to-Text inference (`whisper-rs`)
+- [x] Local LLM REST API client (`reqwest`)
+- [x] PTY command event injection
+- [ ] **Visual Feedback**: On-screen status indicators (*"Listening..."*, *"Transcribing..."*, *"Generating..."*) in the message bar.
+- [ ] **Context Awareness**: Inject active CWD (`/proc/<pid>/cwd`), active shell, and OS info into LLM prompts.
+- [ ] **Interactive Preview & Safety Guard**: Preview command with `Enter` (run), `Tab` (edit), and `Esc` (cancel) with warnings for destructive commands (`rm -rf`).
+- [ ] **Error Diagnosis (`Ctrl+Shift+E`)**: Analyze recent terminal errors and automatically suggest fixes.
+
+---
+
+## 📄 License
+
+Alacritty AI is released under the [Apache License, Version 2.0](LICENSE-APACHE).
