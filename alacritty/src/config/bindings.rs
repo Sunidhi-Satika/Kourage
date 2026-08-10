@@ -262,6 +262,15 @@ pub enum Action {
     /// Navigate to next AI prompt in history.
     AiPromptHistoryNext,
 
+    /// Confirm and execute active AI command preview.
+    AiPreviewConfirm,
+
+    /// Paste active AI previewed command into terminal prompt for editing.
+    AiPreviewEdit,
+
+    /// Cancel active AI command preview.
+    AiPreviewCancel,
+
     /// Allow receiving char input.
     ReceiveChar,
 

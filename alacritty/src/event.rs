@@ -191,6 +191,39 @@ impl AiPromptState {
     }
 }
 
+/// State of the interactive AI command preview bar.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AiPreviewState {
+    /// Active previewed command waiting for user confirmation or editing.
+    pub command: Option<String>,
+    /// Whether this command was flagged as dangerous/destructive.
+    pub is_destructive: bool,
+}
+
+impl AiPreviewState {
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.command.is_some()
+    }
+
+    #[inline]
+    pub fn command(&self) -> Option<&str> {
+        self.command.as_deref()
+    }
+
+    #[inline]
+    pub fn set(&mut self, command: String, is_destructive: bool) {
+        self.command = Some(command);
+        self.is_destructive = is_destructive;
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.command = None;
+        self.is_destructive = false;
+    }
+}
+
 /// Touch zoom speed.
 const TOUCH_ZOOM_FACTOR: f32 = 0.01;
 
@@ -669,6 +702,7 @@ pub enum EventType {
     BlinkCursorTimeout,
     SearchNext,
     Frame,
+    AiPreview { command: String, is_destructive: bool },
 }
 
 impl From<TerminalEvent> for EventType {
@@ -792,6 +826,7 @@ pub struct ActionContext<'a, N, T> {
     pub search_state: &'a mut SearchState,
     pub inline_search_state: &'a mut InlineSearchState,
     pub ai_prompt_state: &'a mut AiPromptState,
+    pub ai_preview_state: &'a mut AiPreviewState,
     pub dirty: &'a mut bool,
     pub occluded: &'a mut bool,
     pub preserve_title: bool,
@@ -1158,6 +1193,49 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
             self.shell_pid,
             Some(self.terminal),
         )
+    }
+
+    #[inline]
+    fn ai_preview_active(&self) -> bool {
+        self.ai_preview_state.is_active()
+    }
+
+    #[inline]
+    fn ai_preview_confirm(&mut self) {
+        if let Some(cmd) = self.ai_preview_state.command.take() {
+            self.ai_preview_state.clear();
+            self.write_to_pty(format!("{}\n", cmd).into_bytes());
+        }
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn ai_preview_edit(&mut self) {
+        if let Some(cmd) = self.ai_preview_state.command.take() {
+            self.ai_preview_state.clear();
+            self.write_to_pty(cmd.into_bytes());
+        }
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn ai_preview_cancel(&mut self) {
+        self.ai_preview_state.clear();
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn show_ai_preview(&mut self, command: String, is_destructive: bool) {
+        self.ai_preview_state.set(command, is_destructive);
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
     }
 
 
@@ -2172,6 +2250,9 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 EventType::ConfigReload(_)
                 | EventType::CreateWindow(_)
                 | EventType::Frame => (),
+                EventType::AiPreview { command, is_destructive } => {
+                    self.ctx.show_ai_preview(command, is_destructive);
+                },
             },
             WinitEvent::WindowEvent { event, .. } => {
                 match event {
@@ -2404,6 +2485,24 @@ mod tests {
             prompt.input(c);
         }
         assert_eq!(prompt.submit(), None);
+    }
+
+    #[test]
+    fn test_ai_preview_state() {
+        let mut preview = AiPreviewState::default();
+        assert!(!preview.is_active());
+        assert_eq!(preview.command(), None);
+        assert!(!preview.is_destructive);
+
+        preview.set("rm -rf /".to_string(), true);
+        assert!(preview.is_active());
+        assert_eq!(preview.command(), Some("rm -rf /"));
+        assert!(preview.is_destructive);
+
+        preview.clear();
+        assert!(!preview.is_active());
+        assert_eq!(preview.command(), None);
+        assert!(!preview.is_destructive);
     }
 }
 

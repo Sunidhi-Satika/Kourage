@@ -16,7 +16,7 @@ use crate::config::UiConfig;
 use crate::display::color::{CellRgb, DIM_FACTOR, List, Rgb};
 use crate::display::hint::{self, HintState};
 use crate::display::{Display, SizeInfo};
-use crate::event::{AiPromptState, SearchState};
+use crate::event::{AiPreviewState, AiPromptState, SearchState};
 
 /// Minimum contrast between a fixed cursor color and the cell's background.
 pub const MIN_CURSOR_CONTRAST: f64 = 1.5;
@@ -44,6 +44,7 @@ impl<'a> RenderableContent<'a> {
         term: &'a Term<T>,
         search_state: &'a mut SearchState,
         ai_prompt_state: &'a AiPromptState,
+        ai_preview_state: &'a AiPreviewState,
     ) -> Self {
         let search = search_state.dfas().map(|dfas| HintMatches::visible_regex_matches(term, dfas));
         let focused_match = search_state.focused_match();
@@ -54,6 +55,7 @@ impl<'a> RenderableContent<'a> {
             || display.cursor_hidden
             || search_state.regex().is_some()
             || ai_prompt_state.is_active()
+            || ai_preview_state.is_active()
             || display.ime.preedit().is_some()
         {
             CursorShape::Hidden

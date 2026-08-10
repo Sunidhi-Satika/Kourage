@@ -145,6 +145,11 @@ pub trait ActionContext<T: EventListener> {
     fn ai_prompt_clear(&mut self) {}
     fn ai_prompt_history_previous(&mut self) {}
     fn ai_prompt_history_next(&mut self) {}
+    fn ai_preview_active(&self) -> bool { false }
+    fn ai_preview_confirm(&mut self) {}
+    fn ai_preview_edit(&mut self) {}
+    fn ai_preview_cancel(&mut self) {}
+    fn show_ai_preview(&mut self, _command: String, _is_destructive: bool) {}
     fn extract_ai_context(&self) -> crate::ai::AiContext {
         crate::ai::AiContext::default()
     }
@@ -204,6 +209,9 @@ impl<T: EventListener> Execute<T> for Action {
             Action::AiPromptDeleteWord => ctx.ai_prompt_pop_word(),
             Action::AiPromptHistoryPrevious => ctx.ai_prompt_history_previous(),
             Action::AiPromptHistoryNext => ctx.ai_prompt_history_next(),
+            Action::AiPreviewConfirm => ctx.ai_preview_confirm(),
+            Action::AiPreviewEdit => ctx.ai_preview_edit(),
+            Action::AiPreviewCancel => ctx.ai_preview_cancel(),
             action @ (Action::ViMotion(_) | Action::Vi(_))
                 if !ctx.terminal().mode().contains(TermMode::VI) =>
             {

@@ -60,6 +60,35 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             return;
         }
 
+        if self.ctx.ai_preview_active() {
+            match &key.logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    self.ctx.ai_preview_confirm();
+                    return;
+                },
+                Key::Named(NamedKey::Tab) => {
+                    self.ctx.ai_preview_edit();
+                    return;
+                },
+                Key::Named(NamedKey::Escape) => {
+                    self.ctx.ai_preview_cancel();
+                    return;
+                },
+                _ => (),
+            }
+
+            if mods.control_key() {
+                if let Key::Character(ref c) = key.logical_key {
+                    if c == "c" || c == "C" {
+                        self.ctx.ai_preview_cancel();
+                        return;
+                    }
+                }
+            }
+
+            self.ctx.ai_preview_cancel();
+        }
+
         if self.ctx.ai_prompt_active() {
             match &key.logical_key {
                 Key::Named(NamedKey::Enter) => {

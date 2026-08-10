@@ -50,7 +50,7 @@ use crate::display::damage::{DamageTracker, damage_y_to_viewport_y};
 use crate::display::hint::{HintMatch, HintState};
 use crate::display::meter::Meter;
 use crate::display::window::Window;
-use crate::event::{AiPromptState, Event, EventType, Mouse, SearchState};
+use crate::event::{AiPreviewState, AiPromptState, Event, EventType, Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
 use crate::renderer::rects::{RenderLine, RenderLines, RenderRect};
 use crate::renderer::{self, GlyphCache, Renderer, platform};
@@ -655,6 +655,7 @@ impl Display {
         message_buffer: &MessageBuffer,
         search_state: &mut SearchState,
         ai_prompt_state: &AiPromptState,
+        ai_preview_state: &AiPreviewState,
         config: &UiConfig,
     ) where
         T: EventListener,
@@ -705,7 +706,8 @@ impl Display {
         let message_bar_lines = message_buffer.message().map_or(0, |m| m.text(&new_size).len());
         let search_lines = usize::from(search_active);
         let ai_prompt_lines = usize::from(ai_prompt_state.is_active());
-        new_size.reserve_lines(message_bar_lines + search_lines + ai_prompt_lines);
+        let ai_preview_lines = usize::from(ai_preview_state.is_active());
+        new_size.reserve_lines(message_bar_lines + search_lines + ai_prompt_lines + ai_preview_lines);
 
         // Update resize increments.
         if config.window.resize_increments {
@@ -782,10 +784,11 @@ impl Display {
         config: &UiConfig,
         search_state: &mut SearchState,
         ai_prompt_state: &mut AiPromptState,
+        ai_preview_state: &AiPreviewState,
     ) {
         // Collect renderable content before the terminal is dropped.
         let mut content =
-            RenderableContent::new(config, self, &terminal, search_state, ai_prompt_state);
+            RenderableContent::new(config, self, &terminal, search_state, ai_prompt_state, ai_preview_state);
         let mut grid_cells = Vec::new();
         for cell in &mut content {
             grid_cells.push(cell);
@@ -826,7 +829,8 @@ impl Display {
         let requires_full_damage = self.visual_bell.intensity() != 0.
             || self.hint_state.active()
             || search_state.regex().is_some()
-            || ai_prompt_state.is_active();
+            || ai_prompt_state.is_active()
+            || ai_preview_state.is_active();
         if requires_full_damage {
             self.damage_tracker.frame().mark_fully_damaged();
             self.damage_tracker.next_frame().mark_fully_damaged();
@@ -967,6 +971,26 @@ impl Display {
 
                 Some(Point::new(line, column))
             },
+            None if ai_preview_state.is_active() => {
+                let cmd = ai_preview_state.command().unwrap_or_default();
+                let is_destructive = ai_preview_state.is_destructive;
+                let (label, action_hint) = if is_destructive {
+                    ("⚠️ DANGER: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
+                } else {
+                    ("💡 AI: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
+                };
+
+                let preview_text =
+                    Self::format_preview(cmd, label, action_hint, size_info.columns());
+
+                // Render the AI preview bar.
+                self.draw_preview(config, &preview_text, is_destructive);
+
+                let line = size_info.screen_lines();
+                let column = Column(0);
+
+                Some(Point::new(line, column))
+            },
             None => {
                 let num_lines = self.size_info.screen_lines();
                 match vi_cursor_viewport_point {
@@ -980,7 +1004,10 @@ impl Display {
         // Handle IME.
         if self.ime.is_enabled() {
             if let Some(point) = ime_position {
-                let (fg, bg) = if search_state.regex().is_some() || ai_prompt_state.is_active() {
+                let (fg, bg) = if search_state.regex().is_some()
+                    || ai_prompt_state.is_active()
+                    || ai_preview_state.is_active()
+                {
                     (config.colors.footer_bar_foreground(), config.colors.footer_bar_background())
                 } else {
                     (foreground_color, background_color)
@@ -991,8 +1018,11 @@ impl Display {
         }
 
         if let Some(message) = message_buffer.message() {
-            let footer_offset =
-                usize::from(search_state.regex().is_some() || ai_prompt_state.is_active());
+            let footer_offset = usize::from(
+                search_state.regex().is_some()
+                    || ai_prompt_state.is_active()
+                    || ai_preview_state.is_active(),
+            );
             let text = message.text(&size_info);
 
             // Create a new rectangle for the background.
@@ -1292,6 +1322,28 @@ impl Display {
         bar_text
     }
 
+    /// Format AI command preview text to fit terminal columns with action hints.
+    fn format_preview(cmd: &str, label: &str, action_hint: &str, max_width: usize) -> String {
+        let label_len = label.chars().count();
+        let hint_len = action_hint.chars().count();
+
+        if label_len + hint_len >= max_width {
+            return label.chars().take(max_width).collect();
+        }
+
+        let max_cmd_len = max_width.saturating_sub(label_len + hint_len);
+        let mut bar_text = String::from(label);
+        bar_text.extend(StrShortener::new(
+            cmd,
+            max_cmd_len,
+            ShortenDirection::Right,
+            Some(SHORTENER),
+        ));
+        bar_text.push_str(action_hint);
+
+        bar_text
+    }
+
     /// Draw preview for the currently highlighted `Hyperlink`.
     #[inline(never)]
     fn draw_hyperlink_preview(
@@ -1389,6 +1441,31 @@ impl Display {
 
         let fg = config.colors.footer_bar_foreground();
         let bg = config.colors.footer_bar_background();
+
+        self.renderer.draw_string(
+            point,
+            fg,
+            bg,
+            text.chars(),
+            &self.size_info,
+            &mut self.glyph_cache,
+        );
+    }
+
+    /// Draw AI command preview bar with danger highlighting if destructive.
+    #[inline(never)]
+    fn draw_preview(&mut self, config: &UiConfig, text: &str, is_destructive: bool) {
+        // Assure text length is at least num_cols.
+        let num_cols = self.size_info.columns();
+        let text = format!("{text:<num_cols$}");
+
+        let point = Point::new(self.size_info.screen_lines(), Column(0));
+
+        let (fg, bg) = if is_destructive {
+            (config.colors.primary.background, config.colors.normal.red)
+        } else {
+            (config.colors.footer_bar_foreground(), config.colors.footer_bar_background())
+        };
 
         self.renderer.draw_string(
             point,

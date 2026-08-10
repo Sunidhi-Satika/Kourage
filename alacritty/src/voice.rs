@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
-use alacritty_terminal::event::Event as TerminalEvent;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use hound::WavWriter;
 use tempfile::NamedTempFile;
@@ -333,9 +332,13 @@ pub fn handle_voice_command(
         // Clear status from message bar upon success
         clear_status(&proxy, window_id);
 
-        // Execute command into PTY stream
+        // Send command to interactive preview & safety guard
+        let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
         let event = Event::new(
-            EventType::Terminal(TerminalEvent::PtyWrite(format!("{}\n", command_from_llm))),
+            EventType::AiPreview {
+                command: command_from_llm,
+                is_destructive,
+            },
             window_id,
         );
         let _ = proxy.send_event(event);
@@ -378,9 +381,13 @@ pub fn handle_text_prompt(
         // Clear status from message bar upon success
         clear_status(&proxy, window_id);
 
-        // Execute command into PTY stream
+        // Send command to interactive preview & safety guard
+        let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
         let event = Event::new(
-            EventType::Terminal(TerminalEvent::PtyWrite(format!("{}\n", command_from_llm))),
+            EventType::AiPreview {
+                command: command_from_llm,
+                is_destructive,
+            },
             window_id,
         );
         let _ = proxy.send_event(event);

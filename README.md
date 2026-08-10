@@ -130,6 +130,9 @@ cargo run --release --bin alacritty
 | `Esc` (in prompt) | `AiPromptCancel` | Cancels and closes prompt overlay |
 | `Up` / `Down` (in prompt) | History Nav | Cycles through previous AI prompt history |
 | `Ctrl + W` (in prompt) | `AiPromptDeleteWord` | Deletes previous word in prompt |
+| `Enter` (in preview) | `AiPreviewConfirm` | **Execute** previewed command immediately into shell |
+| `Tab` (in preview) | `AiPreviewEdit` | **Paste into terminal prompt** for manual editing before running |
+| `Esc` (in preview) | `AiPreviewCancel` | **Dismiss** preview without running anything |
 | `Ctrl + Shift + +` | `IncreaseFontSize` | Increase terminal font size |
 | `Ctrl + Shift + -` | `DecreaseFontSize` | Decrease terminal font size |
 
@@ -137,13 +140,13 @@ cargo run --release --bin alacritty
 
 ## 🗺️ Roadmap & In-Development Features
 
+- [x] **Interactive Preview & Safety Guard**: Full interactive preview bar for all AI commands (`Enter` to run, `Tab` to edit arguments, `Esc` to cancel) with intelligent danger analysis (red ⚠️ warnings for `rm -rf`, `mkfs`, `dd`, `git reset --hard`, `git push --force`, etc.).
 - [x] **Context Awareness Engine**: Automatically extracts active CWD (`/proc/<pid>/cwd`), directory files, tech stack detection (Rust/Cargo, Node/npm, Python, Go, Docker, Git), active shell, OS distro, and recent terminal buffer output to provide hyper-accurate command generation.
 - [x] **Natural Language Text Prompt Bar (`Ctrl+Shift+Space`)**: Inline prompt overlay with typing, cursor, history (`Up`/`Down`), word deletion (`Ctrl+W`), and execution.
 - [x] **Local Voice Capture & STT (`Ctrl+Shift+S`)**: Hands-free voice capture with silence auto-cutoff (`cpal` + `whisper-rs`).
 - [x] **Local LLM Engine**: REST API client querying local LLM daemon (Ollama / Qwen / Llama).
 - [x] **Visual Feedback**: Real-time stage updates (*"🎙️ Recording..."*, *"⚙️ Transcribing..."*, *"🤖 Generating LLM..."*) and error notifications in the message bar.
 - [x] **Configurable LLM Settings**: Configurable model, temperature, timeout, and tilde `~` path resolution.
-- [ ] **Interactive Preview & Safety Guard**: Preview command with `Enter` (run), `Tab` (edit), and `Esc` (cancel) with warnings for destructive commands (`rm -rf`).
 - [ ] **Error Diagnosis & Fix (`Ctrl+Shift+E`)**: Analyze recent terminal errors and suggest automated fixes.
 
 ---
