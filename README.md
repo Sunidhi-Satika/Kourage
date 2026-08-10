@@ -1,11 +1,11 @@
 <p align="center">
-    <img width="180" alt="Alacritty AI Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
+    <img width="180" alt="Kourage Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty AI — Intelligent, Voice-Enabled Terminal Emulator</h1>
+<h1 align="center">Kourage — The All-Knowing AI Terminal Emulator</h1>
 
 <p align="center">
-  <strong>Blazing fast GPU-accelerated terminal with 100% local Voice-to-Command & on-device LLM intelligence.</strong>
+  <strong>Blazing fast GPU-accelerated terminal with 100% local Voice-to-Command & on-device LLM intelligence. Inspired by the Attic Computer from <em>Courage the Cowardly Dog</em>.</strong>
 </p>
 
 <p align="center">
@@ -19,11 +19,11 @@
 
 ---
 
-## ⚡ What is Alacritty AI?
+## ⚡ What is Kourage?
 
-**Alacritty AI** is a fork of the ultra-fast, OpenGL-accelerated [Alacritty](https://github.com/alacritty/alacritty) terminal that adds **embedded voice commands and local natural language understanding**.
+**Kourage** is a fork of the ultra-fast, OpenGL-accelerated [Alacritty](https://github.com/alacritty/alacritty) terminal that adds **embedded voice commands and local natural language understanding**.
 
-Instead of typing long, complex shell commands or remembering obscure flags, you can simply **speak or express your intent in plain English**, and the built-in AI pipeline translates it into executable shell commands directly in your active terminal session.
+Just like the legendary Attic Computer from *Courage the Cowardly Dog* that always had the answer to every impossible crisis, **Kourage** lets you type in plain English or simply speak your intent, translating it into executable shell commands directly in your active terminal session.
 
 > [!IMPORTANT]
 > **100% Privacy & Zero Cloud Dependency**: Speech recognition runs entirely on your CPU/GPU using Whisper GGML models, and language generation connects to local LLM daemons (e.g. Ollama). No voice audio or command data ever leaves your computer.
@@ -150,4 +150,4 @@ cargo run --release --bin alacritty
 
 ## 📄 License
 
-Alacritty AI is released under the [Apache License, Version 2.0](LICENSE-APACHE).
+Kourage is released under the [Apache License, Version 2.0](LICENSE-APACHE).
