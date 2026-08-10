@@ -195,17 +195,18 @@ struct LlmResponse {
     response: String,
 }
 
-fn call_llm(transcribed_text: &str, voice_config: &Voice) -> Result<String, anyhow::Error> {
+use crate::ai::AiContext;
+
+fn call_llm(
+    instruction: &str,
+    context: &AiContext,
+    voice_config: &Voice,
+) -> Result<String, anyhow::Error> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(voice_config.timeout_secs))
         .build()?;
 
-    let prompt = format!(
-        "Convert the following voice or natural language instruction into a single, valid linux shell command. \
-         Only return the raw shell command itself, with no explanations, markdown formatting, or surrounding backticks.\n\n\
-         Instruction: {}",
-        transcribed_text
-    );
+    let prompt = context.format_prompt(instruction);
 
     let request = LlmRequest {
         model: voice_config.model.clone(),
@@ -243,6 +244,7 @@ fn call_llm(transcribed_text: &str, voice_config: &Voice) -> Result<String, anyh
 }
 
 pub fn handle_voice_command(
+    context: AiContext,
     config: &UiConfig,
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
@@ -316,7 +318,7 @@ pub fn handle_voice_command(
             MessageType::Warning,
         );
 
-        let command_from_llm = match call_llm(&transcribed_text, &voice_config) {
+        let command_from_llm = match call_llm(&transcribed_text, &context, &voice_config) {
             Ok(cmd) => cmd,
             Err(e) => {
                 let err_msg = format!("LLM command generation failed: {e}");
@@ -342,6 +344,7 @@ pub fn handle_voice_command(
 
 pub fn handle_text_prompt(
     prompt_text: String,
+    context: AiContext,
     config: &UiConfig,
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
@@ -360,7 +363,7 @@ pub fn handle_text_prompt(
             MessageType::Warning,
         );
 
-        let command_from_llm = match call_llm(&prompt_text, &voice_config) {
+        let command_from_llm = match call_llm(&prompt_text, &context, &voice_config) {
             Ok(cmd) => cmd,
             Err(e) => {
                 let err_msg = format!("LLM command generation failed: {e}");

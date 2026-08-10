@@ -145,6 +145,9 @@ pub trait ActionContext<T: EventListener> {
     fn ai_prompt_clear(&mut self) {}
     fn ai_prompt_history_previous(&mut self) {}
     fn ai_prompt_history_next(&mut self) {}
+    fn extract_ai_context(&self) -> crate::ai::AiContext {
+        crate::ai::AiContext::default()
+    }
     fn semantic_word(&self, point: Point) -> String;
     fn on_terminal_input_start(&mut self) {}
     fn paste(&mut self, _text: &str, _bracketed: bool) {}
@@ -191,7 +194,8 @@ impl<T: EventListener> Execute<T> for Action {
             },
             Action::VoiceCommand => {
                 let window_id = ctx.window().id();
-                voice::handle_voice_command(ctx.config(), ctx.event_proxy(), window_id)
+                let context = ctx.extract_ai_context();
+                voice::handle_voice_command(context, ctx.config(), ctx.event_proxy(), window_id)
             },
             Action::ToggleAiPrompt => ctx.toggle_ai_prompt(),
             Action::AiPromptConfirm => ctx.confirm_ai_prompt(),

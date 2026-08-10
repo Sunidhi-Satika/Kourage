@@ -137,12 +137,12 @@ cargo run --release --bin alacritty
 
 ## 🗺️ Roadmap & In-Development Features
 
+- [x] **Context Awareness Engine**: Automatically extracts active CWD (`/proc/<pid>/cwd`), directory files, tech stack detection (Rust/Cargo, Node/npm, Python, Go, Docker, Git), active shell, OS distro, and recent terminal buffer output to provide hyper-accurate command generation.
 - [x] **Natural Language Text Prompt Bar (`Ctrl+Shift+Space`)**: Inline prompt overlay with typing, cursor, history (`Up`/`Down`), word deletion (`Ctrl+W`), and execution.
 - [x] **Local Voice Capture & STT (`Ctrl+Shift+S`)**: Hands-free voice capture with silence auto-cutoff (`cpal` + `whisper-rs`).
 - [x] **Local LLM Engine**: REST API client querying local LLM daemon (Ollama / Qwen / Llama).
 - [x] **Visual Feedback**: Real-time stage updates (*"🎙️ Recording..."*, *"⚙️ Transcribing..."*, *"🤖 Generating LLM..."*) and error notifications in the message bar.
 - [x] **Configurable LLM Settings**: Configurable model, temperature, timeout, and tilde `~` path resolution.
-- [ ] **Context Awareness**: Inject active CWD (`/proc/<pid>/cwd`), active shell, and OS info into LLM prompts.
 - [ ] **Interactive Preview & Safety Guard**: Preview command with `Enter` (run), `Tab` (edit), and `Esc` (cancel) with warnings for destructive commands (`rm -rf`).
 - [ ] **Error Diagnosis & Fix (`Ctrl+Shift+E`)**: Analyze recent terminal errors and suggest automated fixes.
 

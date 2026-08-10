@@ -63,6 +63,7 @@ use crate::ipc::{self, SocketReply};
 use crate::logging::{LOG_TARGET_CONFIG, LOG_TARGET_WINIT};
 use crate::message_bar::{Message, MessageBuffer};
 use crate::scheduler::{Scheduler, TimerId, Topic};
+use crate::ai::AiContext;
 use crate::voice;
 use crate::window_context::WindowContext;
 
@@ -1090,7 +1091,8 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
     fn confirm_ai_prompt(&mut self) {
         if let Some(prompt) = self.ai_prompt_state.submit() {
             let window_id = self.display.window.id();
-            voice::handle_text_prompt(prompt, self.config, self.event_proxy, window_id);
+            let context = self.extract_ai_context();
+            voice::handle_text_prompt(prompt, context, self.config, self.event_proxy, window_id);
         }
         self.display.damage_tracker.frame().mark_fully_damaged();
         self.display.pending_update.dirty = true;
@@ -1145,6 +1147,17 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
             self.display.pending_update.dirty = true;
             *self.dirty = true;
         }
+    }
+
+    #[inline]
+    fn extract_ai_context(&self) -> AiContext {
+        AiContext::extract(
+            #[cfg(not(windows))]
+            self.master_fd,
+            #[cfg(not(windows))]
+            self.shell_pid,
+            Some(self.terminal),
+        )
     }
 
 
