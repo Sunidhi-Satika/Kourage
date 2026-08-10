@@ -99,6 +99,9 @@ Add the `[voice]` section to your `alacritty.toml` (located at `~/.config/alacri
 [voice]
 whisper_model_path = "~/.config/alacritty/models/ggml-tiny.bin"
 llm_api_url = "http://localhost:11434/api/generate"
+model = "qwen2.5-coder:3b" # or "llama3"
+temperature = 0.0
+timeout_secs = 15
 ```
 
 ### 5. Build and Run
@@ -133,7 +136,8 @@ Press **`Ctrl+Shift+S`**, speak your command, and watch the terminal execute it!
 - [x] Local Speech-to-Text inference (`whisper-rs`)
 - [x] Local LLM REST API client (`reqwest`)
 - [x] PTY command event injection
-- [ ] **Visual Feedback**: On-screen status indicators (*"Listening..."*, *"Transcribing..."*, *"Generating..."*) in the message bar.
+- [x] **Visual Feedback**: Real-time status stages (*"🎙️ Recording audio..."*, *"⚙️ Transcribing speech..."*, *"🤖 Generating command via LLM..."*) and detailed error notifications in the message bar.
+- [x] **Configurable LLM & STT Settings**: Configurable model, temperature, timeout, and tilde `~` model path expansion.
 - [ ] **Context Awareness**: Inject active CWD (`/proc/<pid>/cwd`), active shell, and OS info into LLM prompts.
 - [ ] **Interactive Preview & Safety Guard**: Preview command with `Enter` (run), `Tab` (edit), and `Esc` (cancel) with warnings for destructive commands (`rm -rf`).
 - [ ] **Error Diagnosis (`Ctrl+Shift+E`)**: Analyze recent terminal errors and automatically suggest fixes.

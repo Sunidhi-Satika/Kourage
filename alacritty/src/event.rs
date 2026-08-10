@@ -541,6 +541,7 @@ pub enum EventType {
     Terminal(TerminalEvent),
     ConfigReload(PathBuf),
     Message(Message),
+    ClearMessageTarget(String),
     Scroll(Scroll),
     CreateWindow(WindowOptions),
     #[cfg(unix)]
@@ -1863,10 +1864,21 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                     self.ctx.display.cursor_hidden = false;
                     *self.ctx.dirty = true;
                 },
-                // Add message only if it's not already queued.
-                EventType::Message(message) if !self.ctx.message_buffer.is_queued(&message) => {
-                    self.ctx.message_buffer.push(message);
+                // Add or update message in the message bar.
+                EventType::Message(message) => {
+                    if let Some(target) = message.target() {
+                        self.ctx.message_buffer.remove_target(target);
+                    }
+                    if !self.ctx.message_buffer.is_queued(&message) {
+                        self.ctx.message_buffer.push(message);
+                    }
                     self.ctx.display.pending_update.dirty = true;
+                },
+                EventType::ClearMessageTarget(target) => {
+                    if !self.ctx.message_buffer.is_empty() {
+                        self.ctx.message_buffer.remove_target(&target);
+                        self.ctx.display.pending_update.dirty = true;
+                    }
                 },
                 EventType::Terminal(event) => match event {
                     TerminalEvent::Title(title) => {
@@ -1934,8 +1946,7 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 },
                 #[cfg(unix)]
                 EventType::IpcConfig(_) | EventType::IpcGetConfig(..) => (),
-                EventType::Message(_)
-                | EventType::ConfigReload(_)
+                EventType::ConfigReload(_)
                 | EventType::CreateWindow(_)
                 | EventType::Frame => (),
             },

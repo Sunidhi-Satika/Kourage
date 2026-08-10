@@ -1,1 +1,24 @@
-target
+# Build artifacts
+target/
+Cargo.lock.bak
+
+# Personal planning, tracking, and agent documents
+GEMINI_TODO.md
+LLM_INTEGRATION_PLAN.md
+*TODO*.md
+*todo*.md
+*PLAN*.md
+*plan*.md
+
+# Agent and temporary files
+.gemini/
+.agents/
+scratch/
+*.log
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
