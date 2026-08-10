@@ -108,8 +108,8 @@ timeout_secs = 15
 
 ```bash
 # Clone the repository
-git clone https://github.com/Sunidhi-Satika/alacritty.git
-cd alacritty
+git clone https://github.com/Sunidhi-Satika/Kourage.git
+cd Kourage
 
 # Build & launch
 cargo run --release --bin alacritty
