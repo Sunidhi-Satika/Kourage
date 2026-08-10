@@ -60,6 +60,50 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             return;
         }
 
+        if self.ctx.ai_prompt_active() {
+            match &key.logical_key {
+                Key::Named(NamedKey::Enter) => {
+                    self.ctx.confirm_ai_prompt();
+                    return;
+                },
+                Key::Named(NamedKey::Escape) => {
+                    self.ctx.cancel_ai_prompt();
+                    return;
+                },
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.ctx.ai_prompt_history_previous();
+                    return;
+                },
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.ctx.ai_prompt_history_next();
+                    return;
+                },
+                Key::Named(NamedKey::Backspace) => {
+                    self.ctx.ai_prompt_input('\x08');
+                    return;
+                },
+                _ => (),
+            }
+
+            if mods.control_key() {
+                if let Key::Character(ref c) = key.logical_key {
+                    if c == "w" || c == "W" {
+                        self.ctx.ai_prompt_pop_word();
+                        return;
+                    } else if c == "u" || c == "U" || c == "c" || c == "C" {
+                        self.ctx.cancel_ai_prompt();
+                        return;
+                    }
+                }
+            }
+
+            for character in text.chars() {
+                self.ctx.ai_prompt_input(character);
+            }
+
+            return;
+        }
+
         if self.ctx.search_active() {
             for character in text.chars() {
                 self.ctx.search_input(character);

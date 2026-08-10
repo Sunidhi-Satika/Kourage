@@ -63,6 +63,7 @@ use crate::ipc::{self, SocketReply};
 use crate::logging::{LOG_TARGET_CONFIG, LOG_TARGET_WINIT};
 use crate::message_bar::{Message, MessageBuffer};
 use crate::scheduler::{Scheduler, TimerId, Topic};
+use crate::voice;
 use crate::window_context::WindowContext;
 
 /// Duration after the last user input until an unlimited search is performed.
@@ -73,6 +74,121 @@ const MAX_SEARCH_WHILE_TYPING: Option<usize> = Some(1000);
 
 /// Maximum number of search terms stored in the history.
 const MAX_SEARCH_HISTORY_SIZE: usize = 255;
+
+/// Maximum number of prompt terms stored in the AI prompt history.
+pub const MAX_AI_PROMPT_HISTORY_SIZE: usize = 255;
+
+/// AI text prompt overlay state.
+#[derive(Debug, Default, Clone)]
+pub struct AiPromptState {
+    pub active: bool,
+    pub input: String,
+    pub history: VecDeque<String>,
+    pub history_index: Option<usize>,
+}
+
+impl AiPromptState {
+    #[inline]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    #[inline]
+    pub fn text(&self) -> &str {
+        match self.history_index {
+            Some(index) => self.history.get(index).map(String::as_str).unwrap_or(&self.input),
+            None => &self.input,
+        }
+    }
+
+    #[inline]
+    pub fn input(&mut self, c: char) {
+        if let Some(index) = self.history_index.take() {
+            if let Some(hist) = self.history.get(index) {
+                self.input = hist.clone();
+            }
+        }
+
+        match c {
+            // Handle backspace/ctrl+h.
+            '\x08' | '\x7f' => {
+                let _ = self.input.pop();
+            },
+            // Add ascii and unicode text.
+            ' '..='~' | '\u{a0}'..='\u{10ffff}' => self.input.push(c),
+            // Ignore non-printable characters.
+            _ => (),
+        }
+    }
+
+    #[inline]
+    pub fn pop_word(&mut self) {
+        if let Some(index) = self.history_index.take() {
+            if let Some(hist) = self.history.get(index) {
+                self.input = hist.clone();
+            }
+        }
+        let trimmed = self.input.trim_end();
+        let new_len = trimmed.rfind(' ').map_or(0, |i| i + 1);
+        self.input.truncate(new_len);
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.input.clear();
+        self.history_index = None;
+    }
+
+    #[inline]
+    pub fn history_previous(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let next_index = match self.history_index {
+            None => 0,
+            Some(i) if i + 1 < self.history.len() => i + 1,
+            Some(i) => i,
+        };
+        self.history_index = Some(next_index);
+    }
+
+    #[inline]
+    pub fn history_next(&mut self) {
+        match self.history_index {
+            None | Some(0) => {
+                self.history_index = None;
+            },
+            Some(i) => {
+                self.history_index = Some(i - 1);
+            },
+        }
+    }
+
+    #[inline]
+    pub fn submit(&mut self) -> Option<String> {
+        let prompt = if let Some(index) = self.history_index.take() {
+            self.history.get(index).cloned().unwrap_or_else(|| self.input.clone())
+        } else {
+            self.input.clone()
+        };
+
+        let trimmed = prompt.trim().to_string();
+        self.input.clear();
+        self.active = false;
+        self.history_index = None;
+
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        if self.history.front() != Some(&trimmed) {
+            self.history.push_front(trimmed.clone());
+            self.history.truncate(MAX_AI_PROMPT_HISTORY_SIZE);
+        }
+
+        Some(trimmed)
+    }
+}
 
 /// Touch zoom speed.
 const TOUCH_ZOOM_FACTOR: f32 = 0.01;
@@ -674,6 +790,7 @@ pub struct ActionContext<'a, N, T> {
     pub scheduler: &'a mut Scheduler,
     pub search_state: &'a mut SearchState,
     pub inline_search_state: &'a mut InlineSearchState,
+    pub ai_prompt_state: &'a mut AiPromptState,
     pub dirty: &'a mut bool,
     pub occluded: &'a mut bool,
     pub preserve_title: bool,
@@ -937,6 +1054,99 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
             self.message_buffer.pop();
         }
     }
+
+    #[inline]
+    fn ai_prompt_active(&self) -> bool {
+        self.ai_prompt_state.is_active()
+    }
+
+    #[inline]
+    fn toggle_ai_prompt(&mut self) {
+        if self.ai_prompt_state.is_active() {
+            self.ai_prompt_state.active = false;
+        } else {
+            self.ai_prompt_state.active = true;
+            self.ai_prompt_state.input.clear();
+            self.ai_prompt_state.history_index = None;
+            self.window().set_ime_allowed(true);
+        }
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn ai_prompt_input(&mut self, c: char) {
+        if !self.ai_prompt_state.is_active() {
+            return;
+        }
+        self.ai_prompt_state.input(c);
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn confirm_ai_prompt(&mut self) {
+        if let Some(prompt) = self.ai_prompt_state.submit() {
+            let window_id = self.display.window.id();
+            voice::handle_text_prompt(prompt, self.config, self.event_proxy, window_id);
+        }
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn cancel_ai_prompt(&mut self) {
+        self.ai_prompt_state.active = false;
+        self.ai_prompt_state.input.clear();
+        self.ai_prompt_state.history_index = None;
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        self.display.pending_update.dirty = true;
+        *self.dirty = true;
+    }
+
+    #[inline]
+    fn ai_prompt_pop_word(&mut self) {
+        if self.ai_prompt_state.is_active() {
+            self.ai_prompt_state.pop_word();
+            self.display.damage_tracker.frame().mark_fully_damaged();
+            self.display.pending_update.dirty = true;
+            *self.dirty = true;
+        }
+    }
+
+    #[inline]
+    fn ai_prompt_clear(&mut self) {
+        if self.ai_prompt_state.is_active() {
+            self.ai_prompt_state.clear();
+            self.display.damage_tracker.frame().mark_fully_damaged();
+            self.display.pending_update.dirty = true;
+            *self.dirty = true;
+        }
+    }
+
+    #[inline]
+    fn ai_prompt_history_previous(&mut self) {
+        if self.ai_prompt_state.is_active() {
+            self.ai_prompt_state.history_previous();
+            self.display.damage_tracker.frame().mark_fully_damaged();
+            self.display.pending_update.dirty = true;
+            *self.dirty = true;
+        }
+    }
+
+    #[inline]
+    fn ai_prompt_history_next(&mut self) {
+        if self.ai_prompt_state.is_active() {
+            self.ai_prompt_state.history_next();
+            self.display.damage_tracker.frame().mark_fully_damaged();
+            self.display.pending_update.dirty = true;
+            *self.dirty = true;
+        }
+    }
+
 
     #[inline]
     fn start_search(&mut self, direction: Direction) {
@@ -2103,3 +2313,84 @@ impl EventListener for EventProxy {
         let _ = self.proxy.send_event(Event::new(event.into(), self.window_id));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ai_prompt_input_and_backspace() {
+        let mut prompt = AiPromptState::default();
+        prompt.active = true;
+        for c in "list all files".chars() {
+            prompt.input(c);
+        }
+        assert_eq!(prompt.text(), "list all files");
+
+        prompt.input('\x08'); // Backspace
+        assert_eq!(prompt.text(), "list all file");
+        prompt.input('s');
+        assert_eq!(prompt.text(), "list all files");
+    }
+
+    #[test]
+    fn test_ai_prompt_pop_word() {
+        let mut prompt = AiPromptState::default();
+        for c in "find large files".chars() {
+            prompt.input(c);
+        }
+        assert_eq!(prompt.text(), "find large files");
+
+        prompt.pop_word();
+        assert_eq!(prompt.text(), "find large ");
+
+        prompt.pop_word();
+        assert_eq!(prompt.text(), "find ");
+
+        prompt.pop_word();
+        assert_eq!(prompt.text(), "");
+    }
+
+    #[test]
+    fn test_ai_prompt_submit_and_history() {
+        let mut prompt = AiPromptState::default();
+        prompt.active = true;
+
+        for c in "echo hello".chars() {
+            prompt.input(c);
+        }
+        let submitted = prompt.submit();
+        assert_eq!(submitted, Some("echo hello".to_string()));
+        assert!(!prompt.is_active());
+        assert_eq!(prompt.text(), "");
+
+        // Second command
+        prompt.active = true;
+        for c in "docker ps".chars() {
+            prompt.input(c);
+        }
+        let submitted2 = prompt.submit();
+        assert_eq!(submitted2, Some("docker ps".to_string()));
+
+        // History navigation
+        prompt.history_previous();
+        assert_eq!(prompt.text(), "docker ps");
+
+        prompt.history_previous();
+        assert_eq!(prompt.text(), "echo hello");
+
+        prompt.history_next();
+        assert_eq!(prompt.text(), "docker ps");
+    }
+
+    #[test]
+    fn test_ai_prompt_empty_submit() {
+        let mut prompt = AiPromptState::default();
+        prompt.active = true;
+        for c in "   ".chars() {
+            prompt.input(c);
+        }
+        assert_eq!(prompt.submit(), None);
+    }
+}
+

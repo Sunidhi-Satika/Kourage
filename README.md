@@ -32,6 +32,7 @@ Instead of typing long, complex shell commands or remembering obscure flags, you
 
 ## 🌟 Key Features
 
+- 💬 **Natural Language AI Prompt Bar**: Press `Ctrl+Shift+Space` to open an inline AI prompt bar (`🤖 AI: `), type your intent in plain English, and hit `Enter`.
 - 🎙️ **Hands-Free Voice-to-Command**: Press `Ctrl+Shift+S` and speak naturally (e.g., *"show all hidden files sorted by modification time"*).
 - 🧠 **Local LLM Intent Parsing**: Automatically turns natural language into valid shell commands (`ls -lat`) using local models like `qwen2.5-coder` or `llama3`.
 - 🔇 **Smart RMS Silence Detection**: Automatically detects when you stop speaking and begins transcription with zero manual cutoffs.
@@ -43,23 +44,22 @@ Instead of typing long, complex shell commands or remembering obscure flags, you
 ## 🔄 How It Works
 
 ```
-+-------------------+       +-----------------------+       +----------------------+
-| 🎙️  Microphone     | ----> | 🔊 Whisper STT Engine  | ----> | 🧠  Local LLM Server  |
-| (cpal capture)    |       | (whisper-rs / GGML)   |       | (Ollama / REST API)  |
-+-------------------+       +-----------------------+       +----------------------+
-                                                                        |
-                                                                        v
-                                                            +----------------------+
-                                                            | 💻  Alacritty PTY    |
-                                                            | (Automatic Execution)|
-                                                            +----------------------+
++--------------------------+       +-----------------------+       +----------------------+
+| 💬 Text Prompt Bar        |       | 🔊 Whisper STT Engine  |       | 🧠  Local LLM Server  |
+| (Ctrl+Shift+Space)       | ----+ | (whisper-rs / GGML)   | ----> | (Ollama / REST API)  |
++--------------------------+     | +-----------------------+       +----------------------+
+                                 |             ^                               |
++--------------------------+     |             |                               v
+| 🎙️  Microphone            | ----+-------------+                   +----------------------+
+| (Ctrl+Shift+S / cpal)    |                                       | 💻  Alacritty PTY    |
++--------------------------+                                       | (Automatic Execution)|
+                                                                   +----------------------+
 ```
 
-1. **Trigger**: You press `Ctrl+Shift+S`.
-2. **Record**: `cpal` captures audio from your microphone with RMS silence detection.
-3. **Transcribe**: `whisper-rs` transcribes speech into text using local GGML Whisper weights.
-4. **Translate**: The transcribed text is sent to your local LLM daemon (e.g. `http://localhost:11434`).
-5. **Execute**: The generated shell command is written straight into the terminal PTY.
+1. **Text Mode**: Press `Ctrl+Shift+Space`, type your prompt (e.g. *"find all files bigger than 50MB"*), and hit `Enter`.
+2. **Voice Mode**: Press `Ctrl+Shift+S`, speak your command naturally, and Whisper transcribes it.
+3. **Inference**: The prompt is processed locally by your LLM (e.g. Ollama).
+4. **Execution**: The resulting shell command is injected straight into the terminal PTY.
 
 ---
 
@@ -74,7 +74,7 @@ Make sure the native system audio and build tools are installed:
 sudo apt install -y libasound2-dev libopenblas-dev libclang-dev cmake pkg-config fontconfig
 ```
 
-### 2. Download a Local Whisper Model
+### 2. Download a Local Whisper Model (Optional for Voice)
 
 Download a compact GGML model (e.g. `tiny` or `base`):
 
@@ -88,7 +88,7 @@ wget -O ~/.config/alacritty/models/ggml-tiny.bin https://huggingface.co/ggergano
 Make sure [Ollama](https://ollama.com) is installed and running:
 
 ```bash
-ollama run llama3 # or: ollama run qwen2.5-coder:3b
+ollama run qwen2.5-coder:3b # or: ollama run llama3
 ```
 
 ### 4. Configure Alacritty
@@ -115,7 +115,8 @@ cd alacritty
 cargo run --release --bin alacritty
 ```
 
-Press **`Ctrl+Shift+S`**, speak your command, and watch the terminal execute it!
+- Press **`Ctrl+Shift+Space`** to open the AI prompt bar and type any command!
+- Press **`Ctrl+Shift+S`** to speak your command!
 
 ---
 
@@ -123,24 +124,27 @@ Press **`Ctrl+Shift+S`**, speak your command, and watch the terminal execute it!
 
 | Keybinding | Action | Description |
 | :--- | :--- | :--- |
+| `Ctrl + Shift + Space` | `ToggleAiPrompt` | Opens/closes inline natural language AI prompt bar (`🤖 AI: `) |
 | `Ctrl + Shift + S` | `VoiceCommand` | Starts microphone recording and executes transcribed AI command |
+| `Enter` (in prompt) | `AiPromptConfirm` | Submits prompt to LLM for shell command generation |
+| `Esc` (in prompt) | `AiPromptCancel` | Cancels and closes prompt overlay |
+| `Up` / `Down` (in prompt) | History Nav | Cycles through previous AI prompt history |
+| `Ctrl + W` (in prompt) | `AiPromptDeleteWord` | Deletes previous word in prompt |
 | `Ctrl + Shift + +` | `IncreaseFontSize` | Increase terminal font size |
 | `Ctrl + Shift + -` | `DecreaseFontSize` | Decrease terminal font size |
-| `Ctrl + Shift + Space` | *Prompt Overlay (Coming Soon)* | Opens inline natural language text prompt |
 
 ---
 
 ## 🗺️ Roadmap & In-Development Features
 
-- [x] Local voice capture with silence auto-cutoff (`cpal`)
-- [x] Local Speech-to-Text inference (`whisper-rs`)
-- [x] Local LLM REST API client (`reqwest`)
-- [x] PTY command event injection
-- [x] **Visual Feedback**: Real-time status stages (*"🎙️ Recording audio..."*, *"⚙️ Transcribing speech..."*, *"🤖 Generating command via LLM..."*) and detailed error notifications in the message bar.
-- [x] **Configurable LLM & STT Settings**: Configurable model, temperature, timeout, and tilde `~` model path expansion.
+- [x] **Natural Language Text Prompt Bar (`Ctrl+Shift+Space`)**: Inline prompt overlay with typing, cursor, history (`Up`/`Down`), word deletion (`Ctrl+W`), and execution.
+- [x] **Local Voice Capture & STT (`Ctrl+Shift+S`)**: Hands-free voice capture with silence auto-cutoff (`cpal` + `whisper-rs`).
+- [x] **Local LLM Engine**: REST API client querying local LLM daemon (Ollama / Qwen / Llama).
+- [x] **Visual Feedback**: Real-time stage updates (*"🎙️ Recording..."*, *"⚙️ Transcribing..."*, *"🤖 Generating LLM..."*) and error notifications in the message bar.
+- [x] **Configurable LLM Settings**: Configurable model, temperature, timeout, and tilde `~` path resolution.
 - [ ] **Context Awareness**: Inject active CWD (`/proc/<pid>/cwd`), active shell, and OS info into LLM prompts.
 - [ ] **Interactive Preview & Safety Guard**: Preview command with `Enter` (run), `Tab` (edit), and `Esc` (cancel) with warnings for destructive commands (`rm -rf`).
-- [ ] **Error Diagnosis (`Ctrl+Shift+E`)**: Analyze recent terminal errors and automatically suggest fixes.
+- [ ] **Error Diagnosis & Fix (`Ctrl+Shift+E`)**: Analyze recent terminal errors and suggest automated fixes.
 
 ---
 

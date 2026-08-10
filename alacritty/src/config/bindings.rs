@@ -241,6 +241,27 @@ pub enum Action {
     /// Trigger voice command input.
     VoiceCommand,
 
+    /// Toggle AI prompt bar overlay.
+    ToggleAiPrompt,
+
+    /// Submit active AI prompt.
+    AiPromptConfirm,
+
+    /// Cancel active AI prompt.
+    AiPromptCancel,
+
+    /// Clear current AI prompt line.
+    AiPromptClear,
+
+    /// Delete previous word in AI prompt.
+    AiPromptDeleteWord,
+
+    /// Navigate to previous AI prompt in history.
+    AiPromptHistoryPrevious,
+
+    /// Navigate to next AI prompt in history.
+    AiPromptHistoryNext,
+
     /// Allow receiving char input.
     ReceiveChar,
 
@@ -452,8 +473,9 @@ pub fn default_key_bindings() -> Vec<KeyBinding> {
         Backspace, ModifiersState::ALT,     ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\x1b\x7f".into());
         Backspace, ModifiersState::SHIFT,   ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\x7f".into());
         Enter => KeyLocation::Numpad, ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\n".into());
+        // AI Prompt
+        Space, ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH, ~BindingMode::VI; Action::ToggleAiPrompt;
         // Vi mode.
-        Space, ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH; Action::ToggleViMode;
         Space, ModifiersState::SHIFT | ModifiersState::CONTROL, +BindingMode::VI, ~BindingMode::SEARCH; Action::ScrollToBottom;
         Escape,                             +BindingMode::VI, ~BindingMode::SEARCH; Action::ClearSelection;
         "i",                                +BindingMode::VI, ~BindingMode::SEARCH; Action::ToggleViMode;

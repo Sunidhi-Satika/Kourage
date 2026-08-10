@@ -340,3 +340,48 @@ pub fn handle_voice_command(
     });
 }
 
+pub fn handle_text_prompt(
+    prompt_text: String,
+    config: &UiConfig,
+    proxy: &EventLoopProxy<Event>,
+    window_id: WindowId,
+) {
+    let voice_config = config.voice.clone();
+    let proxy = proxy.clone();
+
+    thread::spawn(move || {
+        send_status(
+            &proxy,
+            window_id,
+            format!(
+                "🤖 Generating command via LLM ({}) for: \"{}\"...",
+                voice_config.model, prompt_text
+            ),
+            MessageType::Warning,
+        );
+
+        let command_from_llm = match call_llm(&prompt_text, &voice_config) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                let err_msg = format!("LLM command generation failed: {e}");
+                error!("{err_msg}");
+                send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
+                return;
+            }
+        };
+
+        info!("Command from LLM: {}", command_from_llm);
+
+        // Clear status from message bar upon success
+        clear_status(&proxy, window_id);
+
+        // Execute command into PTY stream
+        let event = Event::new(
+            EventType::Terminal(TerminalEvent::PtyWrite(format!("{}\n", command_from_llm))),
+            window_id,
+        );
+        let _ = proxy.send_event(event);
+    });
+}
+
+

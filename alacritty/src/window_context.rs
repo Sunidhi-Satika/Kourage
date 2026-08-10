@@ -36,7 +36,7 @@ use crate::config::UiConfig;
 use crate::display::Display;
 use crate::display::window::Window;
 use crate::event::{
-    ActionContext, Event, EventProxy, InlineSearchState, Mouse, SearchState, TouchPurpose,
+    ActionContext, AiPromptState, Event, EventProxy, InlineSearchState, Mouse, SearchState, TouchPurpose,
 };
 #[cfg(unix)]
 use crate::logging::LOG_TARGET_IPC_CONFIG;
@@ -56,6 +56,7 @@ pub struct WindowContext {
     modifiers: Modifiers,
     inline_search_state: InlineSearchState,
     search_state: SearchState,
+    pub ai_prompt_state: AiPromptState,
     notifier: Notifier,
     mouse: Mouse,
     touch: TouchPurpose,
@@ -248,6 +249,7 @@ impl WindowContext {
             message_buffer: Default::default(),
             window_config: Default::default(),
             search_state: Default::default(),
+            ai_prompt_state: Default::default(),
             event_queue: Default::default(),
             modifiers: Default::default(),
             occluded: Default::default(),
@@ -394,6 +396,7 @@ impl WindowContext {
             &self.message_buffer,
             &self.config,
             &mut self.search_state,
+            &mut self.ai_prompt_state,
         );
     }
 
@@ -432,6 +435,7 @@ impl WindowContext {
             message_buffer: &mut self.message_buffer,
             inline_search_state: &mut self.inline_search_state,
             search_state: &mut self.search_state,
+            ai_prompt_state: &mut self.ai_prompt_state,
             modifiers: &mut self.modifiers,
             notifier: &mut self.notifier,
             display: &mut self.display,
@@ -466,6 +470,7 @@ impl WindowContext {
                 &mut self.notifier,
                 &self.message_buffer,
                 &mut self.search_state,
+                &self.ai_prompt_state,
                 old_is_searching,
                 &self.config,
             );
@@ -533,6 +538,7 @@ impl WindowContext {
         notifier: &mut Notifier,
         message_buffer: &MessageBuffer,
         search_state: &mut SearchState,
+        ai_prompt_state: &AiPromptState,
         old_is_searching: bool,
         config: &UiConfig,
     ) {
@@ -545,7 +551,7 @@ impl WindowContext {
             search_state.direction == Direction::Left
         };
 
-        display.handle_update(terminal, notifier, message_buffer, search_state, config);
+        display.handle_update(terminal, notifier, message_buffer, search_state, ai_prompt_state, config);
 
         let new_is_searching = search_state.history_index.is_some();
         if !old_is_searching && new_is_searching {

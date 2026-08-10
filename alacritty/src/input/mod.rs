@@ -136,6 +136,15 @@ pub trait ActionContext<T: EventListener> {
     fn hint_input(&mut self, _character: char) {}
     fn trigger_hint(&mut self, _hint: &HintMatch) {}
     fn expand_selection(&mut self) {}
+    fn ai_prompt_active(&self) -> bool { false }
+    fn toggle_ai_prompt(&mut self) {}
+    fn ai_prompt_input(&mut self, _c: char) {}
+    fn confirm_ai_prompt(&mut self) {}
+    fn cancel_ai_prompt(&mut self) {}
+    fn ai_prompt_pop_word(&mut self) {}
+    fn ai_prompt_clear(&mut self) {}
+    fn ai_prompt_history_previous(&mut self) {}
+    fn ai_prompt_history_next(&mut self) {}
     fn semantic_word(&self, point: Point) -> String;
     fn on_terminal_input_start(&mut self) {}
     fn paste(&mut self, _text: &str, _bracketed: bool) {}
@@ -184,6 +193,13 @@ impl<T: EventListener> Execute<T> for Action {
                 let window_id = ctx.window().id();
                 voice::handle_voice_command(ctx.config(), ctx.event_proxy(), window_id)
             },
+            Action::ToggleAiPrompt => ctx.toggle_ai_prompt(),
+            Action::AiPromptConfirm => ctx.confirm_ai_prompt(),
+            Action::AiPromptCancel => ctx.cancel_ai_prompt(),
+            Action::AiPromptClear => ctx.ai_prompt_clear(),
+            Action::AiPromptDeleteWord => ctx.ai_prompt_pop_word(),
+            Action::AiPromptHistoryPrevious => ctx.ai_prompt_history_previous(),
+            Action::AiPromptHistoryNext => ctx.ai_prompt_history_next(),
             action @ (Action::ViMotion(_) | Action::Vi(_))
                 if !ctx.terminal().mode().contains(TermMode::VI) =>
             {

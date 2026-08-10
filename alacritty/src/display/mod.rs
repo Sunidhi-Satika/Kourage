@@ -50,7 +50,7 @@ use crate::display::damage::{DamageTracker, damage_y_to_viewport_y};
 use crate::display::hint::{HintMatch, HintState};
 use crate::display::meter::Meter;
 use crate::display::window::Window;
-use crate::event::{Event, EventType, Mouse, SearchState};
+use crate::event::{AiPromptState, Event, EventType, Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
 use crate::renderer::rects::{RenderLine, RenderLines, RenderRect};
 use crate::renderer::{self, GlyphCache, Renderer, platform};
@@ -654,6 +654,7 @@ impl Display {
         pty_resize_handle: &mut dyn OnResize,
         message_buffer: &MessageBuffer,
         search_state: &mut SearchState,
+        ai_prompt_state: &AiPromptState,
         config: &UiConfig,
     ) where
         T: EventListener,
@@ -703,7 +704,8 @@ impl Display {
         let search_active = search_state.history_index.is_some();
         let message_bar_lines = message_buffer.message().map_or(0, |m| m.text(&new_size).len());
         let search_lines = usize::from(search_active);
-        new_size.reserve_lines(message_bar_lines + search_lines);
+        let ai_prompt_lines = usize::from(ai_prompt_state.is_active());
+        new_size.reserve_lines(message_bar_lines + search_lines + ai_prompt_lines);
 
         // Update resize increments.
         if config.window.resize_increments {
@@ -779,9 +781,11 @@ impl Display {
         message_buffer: &MessageBuffer,
         config: &UiConfig,
         search_state: &mut SearchState,
+        ai_prompt_state: &mut AiPromptState,
     ) {
         // Collect renderable content before the terminal is dropped.
-        let mut content = RenderableContent::new(config, self, &terminal, search_state);
+        let mut content =
+            RenderableContent::new(config, self, &terminal, search_state, ai_prompt_state);
         let mut grid_cells = Vec::new();
         for cell in &mut content {
             grid_cells.push(cell);
@@ -821,7 +825,8 @@ impl Display {
 
         let requires_full_damage = self.visual_bell.intensity() != 0.
             || self.hint_state.active()
-            || search_state.regex().is_some();
+            || search_state.regex().is_some()
+            || ai_prompt_state.is_active();
         if requires_full_damage {
             self.damage_tracker.frame().mark_fully_damaged();
             self.damage_tracker.next_frame().mark_fully_damaged();
@@ -909,7 +914,7 @@ impl Display {
             rects.push(visual_bell_rect);
         }
 
-        // Handle IME positioning and search bar rendering.
+        // Handle IME positioning and search bar / AI prompt rendering.
         let ime_position = match search_state.regex() {
             Some(regex) => {
                 let search_label = match search_state.direction() {
@@ -938,6 +943,30 @@ impl Display {
 
                 Some(Point::new(line, column))
             },
+            None if ai_prompt_state.is_active() => {
+                let prompt_label = "AI: ";
+                let prompt_text =
+                    Self::format_prompt(ai_prompt_state.text(), prompt_label, size_info.columns());
+
+                // Render the AI prompt bar.
+                self.draw_prompt(config, &prompt_text);
+
+                // Draw prompt bar cursor.
+                let line = size_info.screen_lines();
+                let column = Column(prompt_text.chars().count() - 1);
+
+                // Add cursor to prompt bar if IME is not active.
+                if self.ime.preedit().is_none() {
+                    let fg = config.colors.footer_bar_foreground();
+                    let shape = CursorShape::Block;
+                    let cursor_width = NonZeroU32::new(1).unwrap();
+                    let cursor =
+                        RenderableCursor::new(Point::new(line, column), shape, fg, cursor_width);
+                    rects.extend(cursor.rects(&size_info, config.cursor.thickness()));
+                }
+
+                Some(Point::new(line, column))
+            },
             None => {
                 let num_lines = self.size_info.screen_lines();
                 match vi_cursor_viewport_point {
@@ -951,7 +980,7 @@ impl Display {
         // Handle IME.
         if self.ime.is_enabled() {
             if let Some(point) = ime_position {
-                let (fg, bg) = if search_state.regex().is_some() {
+                let (fg, bg) = if search_state.regex().is_some() || ai_prompt_state.is_active() {
                     (config.colors.footer_bar_foreground(), config.colors.footer_bar_background())
                 } else {
                     (foreground_color, background_color)
@@ -962,11 +991,12 @@ impl Display {
         }
 
         if let Some(message) = message_buffer.message() {
-            let search_offset = usize::from(search_state.regex().is_some());
+            let footer_offset =
+                usize::from(search_state.regex().is_some() || ai_prompt_state.is_active());
             let text = message.text(&size_info);
 
             // Create a new rectangle for the background.
-            let start_line = size_info.screen_lines() + search_offset;
+            let start_line = size_info.screen_lines() + footer_offset;
             let y = size_info.cell_height().mul_add(start_line as f32, size_info.padding_y());
 
             let bg = match message.ty() {
@@ -1239,6 +1269,29 @@ impl Display {
         bar_text
     }
 
+    /// Format AI prompt text to account for the cursor and fullwidth characters.
+    fn format_prompt(prompt: &str, label: &str, max_width: usize) -> String {
+        let label_len = label.chars().count();
+
+        // Skip formatting if only label is visible.
+        if label_len > max_width {
+            return label.chars().take(max_width).collect();
+        }
+
+        let mut bar_text = String::from(label);
+        bar_text.extend(StrShortener::new(
+            prompt,
+            max_width.wrapping_sub(label_len + 1),
+            ShortenDirection::Left,
+            Some(SHORTENER),
+        ));
+
+        // Add place for cursor.
+        bar_text.push(' ');
+
+        bar_text
+    }
+
     /// Draw preview for the currently highlighted `Hyperlink`.
     #[inline(never)]
     fn draw_hyperlink_preview(
@@ -1306,6 +1359,28 @@ impl Display {
     /// Draw current search regex.
     #[inline(never)]
     fn draw_search(&mut self, config: &UiConfig, text: &str) {
+        // Assure text length is at least num_cols.
+        let num_cols = self.size_info.columns();
+        let text = format!("{text:<num_cols$}");
+
+        let point = Point::new(self.size_info.screen_lines(), Column(0));
+
+        let fg = config.colors.footer_bar_foreground();
+        let bg = config.colors.footer_bar_background();
+
+        self.renderer.draw_string(
+            point,
+            fg,
+            bg,
+            text.chars(),
+            &self.size_info,
+            &mut self.glyph_cache,
+        );
+    }
+
+    /// Draw AI prompt bar.
+    #[inline(never)]
+    fn draw_prompt(&mut self, config: &UiConfig, text: &str) {
         // Assure text length is at least num_cols.
         let num_cols = self.size_info.columns();
         let text = format!("{text:<num_cols$}");
