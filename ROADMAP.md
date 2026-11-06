@@ -57,12 +57,12 @@ WSL2 is fine for Stage 0 to 2 (terminal, daemon, shell integration) but not beyo
 - **Stage 5** needs to boot an ISO on real hardware.
 - **Throughout:** WSL audio goes through WSLg's RDP bridge and GPU access for models is limited, so voice and model performance there aren't representative.
 
-Decision: move development to a native Linux machine now rather than at Stage 3.
+Decision (2026-11-06): develop in WSL2 (Ubuntu) on Windows through the end of Stage 2. Before starting Stage 3, set up a dual-boot Ubuntu install (or Linux on an external SSD). Add a VM later for testing the Stage 5 ISO.
 
-TODO on the native machine:
+TODO for WSL setup (on any Windows machine):
 - [ ] Clone the repo and run `cargo build` and `cargo test -p alacritty`. Install the build deps from `INSTALL.md`, plus `clang`/`libclang` for whisper-rs and `libasound2-dev` for cpal.
-- [ ] Install and check audio tooling: `alsa-utils`, then `arecord -d 3 -f cd /tmp/t.wav && aplay /tmp/t.wav`.
-- [ ] Install Ollama, run `ollama pull qwen2.5-coder:3b`, and check that `curl localhost:11434/api/tags` lists it.
+- [ ] Install and check audio tooling: `sudo apt install alsa-utils pulseaudio-utils libasound2-plugins`. Then `pactl list short sources` should show WSLg's `RDPSource`, and `arecord -d 3 -f cd /tmp/t.wav && aplay /tmp/t.wav` should play back your voice. If ALSA finds no device, add an `~/.asoundrc` routing `default` to `pulse`.
+- [ ] Install Ollama **inside WSL**, not on Windows, because WSL can't reach Windows' `localhost` without mirrored networking. Run `ollama pull qwen2.5-coder:3b`, and check that `curl localhost:11434/api/tags` lists it.
 - [ ] Download a Whisper model to `~/.config/alacritty/models/ggml-tiny.bin` and point `[voice] whisper_model_path` at it in `~/.config/alacritty/alacritty.toml`.
 - [ ] Smoke test: the text prompt (Ctrl+Shift+Space) should work. Voice (Ctrl+Shift+S) is expected to fail at "Whisper transcription failed" until the WAV format bug above is fixed. Confirm this, then start on the Stage 0 gaps.
 
@@ -137,6 +137,19 @@ Goal: a bootable, installable flavor with Kourage as the default experience.
 
 Exit criteria: someone other than the author installs it on real hardware from the ISO and completes the onboarding.
 
+## Cross-platform release (Kourage app for Windows, macOS and Linux)
+
+Once the app is in good shape, make a copy of it, separate from the Linux distro track, that runs on all major operating systems. Alacritty is already cross-platform, so this stays cheap as long as Kourage code doesn't lock itself to Linux. Rules from Stage 1 onward:
+
+- `kourage-core` stays OS-agnostic. OS-specific bits (cwd lookup via `/proc`, `/etc/os-release`, shell detection) go behind a small platform trait with Linux, macOS and Windows implementations.
+- Daemon transport: a Unix socket on Linux/macOS and a named pipe on Windows, behind one interface. When the daemon is absent, the embedded fallback (Stage 1) is the default on Windows and macOS.
+- Shell integration (Stage 2) covers PowerShell as well as bash, zsh and fish.
+- Safety rules include Windows-dangerous commands (`Remove-Item -Recurse`, `format`, `del /s`, `diskpart`).
+- Linux-only features from Stages 3 to 5 (Landlock/bubblewrap, btrfs snapshots, NetworkManager, systemd) stay Linux-only, and the cross-platform app degrades gracefully without them.
+- Packaging: `.msi` for Windows (Alacritty already has one), `.dmg` for macOS, `.deb`/AppImage for Linux. CI should build all three from Stage 1 on, so breakage shows up early.
+
+Timing: after Stage 2, the app is a complete product. The cross-platform release can ship then, in parallel with Stage 3.
+
 ## Stage 6: Beyond (only after Stage 5 is stable)
 
 Custom desktop shell, on-device fine-tuning or LoRA for personal workflows, multi-device sync, and an app ecosystem that exposes its actions to the agent.
@@ -161,3 +174,5 @@ Custom desktop shell, on-device fine-tuning or LoRA for personal workflows, mult
 2. Distro base: Ubuntu/Debian, Arch, or NixOS?
 3. Desktop: ship GNOME/KDE with extensions, or aim for a custom shell later?
 4. Is an optional cloud-model plugin acceptable, or strictly local only?
+5. ~~Dev environment~~ Decided: WSL through Stage 2, dual-boot before Stage 3.
+6. ~~Cross-platform~~ Decided: yes, the app ships for Windows, macOS and Linux as well as the distro.
