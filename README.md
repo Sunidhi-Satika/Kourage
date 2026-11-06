@@ -32,11 +32,13 @@ Just like the legendary Attic Computer from *Courage the Cowardly Dog* that alwa
 
 ## 🌟 Key Features
 
-- 💬 **Natural Language AI Prompt Bar**: Press `Ctrl+Shift+A` to open an inline AI prompt bar (`🤖 AI: `), type your intent in plain English, and hit `Enter`.
+- 💬 **Natural Language AI Prompt Bar**: Press `Ctrl+Shift+A` to open an inline AI prompt bar (`AI: `), type your intent in plain English, and hit `Enter`.
 - 🎙️ **Hands-Free Voice-to-Command**: Press `Ctrl+Shift+S` and speak naturally (e.g., *"show all hidden files sorted by modification time"*).
 - 🧠 **Local LLM Intent Parsing**: Automatically turns natural language into valid shell commands (`ls -lat`) using local models like `qwen2.5-coder` or `llama3`.
 - 🔇 **Smart RMS Silence Detection**: Automatically detects when you stop speaking and begins transcription with zero manual cutoffs.
 - ⚡ **Pure High-Performance Rust**: Non-blocking asynchronous worker threads ensure that voice and LLM processing never freeze Alacritty's 60+ FPS GPU render loop.
+- 👀 **Always-Visible Status**: One line on the last terminal row shows *listening* (with a live mic meter), *transcribing*, *sent to the model, waiting* and any error, each with a seconds counter.
+- 🛡️ **Preview & Safety Guard**: Nothing runs until you confirm. Risky commands (`rm -rf`, `sudo`, `curl | sh`, `git reset --hard`, anything that ends your shell...) are flagged as `DANGER`.
 - 🔒 **Safe & Offline**: No API keys, no subscriptions, and no internet connection required.
 
 ---
@@ -59,7 +61,7 @@ Just like the legendary Attic Computer from *Courage the Cowardly Dog* that alwa
 1. **Text Mode**: Press `Ctrl+Shift+A`, type your prompt (e.g. *"find all files bigger than 50MB"*), and hit `Enter`.
 2. **Voice Mode**: Press `Ctrl+Shift+S`, speak your command naturally, and Whisper transcribes it.
 3. **Inference**: The prompt is processed locally by your LLM (e.g. Ollama).
-4. **Execution**: The resulting shell command is injected straight into the terminal PTY.
+4. **Preview & confirm**: The command appears in a preview line. `Enter` runs it, `Tab` pastes it into your prompt for editing, `Esc` cancels. Nothing runs without your confirmation.
 
 ---
 
@@ -176,12 +178,12 @@ Commands that look destructive (recursive `rm`, `sudo`, `curl | sh`, `git reset 
 
 ## 🗺️ Roadmap & In-Development Features
 
-- [x] **Interactive Preview & Safety Guard**: Full interactive preview bar for all AI commands (`Enter` to run, `Tab` to edit arguments, `Esc` to cancel) with intelligent danger analysis (red ⚠️ warnings for `rm -rf`, `mkfs`, `dd`, `git reset --hard`, `git push --force`, etc.).
+- [x] **Interactive Preview & Safety Guard**: Full interactive preview bar for all AI commands (`Enter` to run, `Tab` to edit arguments, `Esc` to cancel) with intelligent danger analysis (red `DANGER` warnings for `rm -rf`, `mkfs`, `dd`, `git reset --hard`, `git push --force`, etc.).
 - [x] **Context Awareness Engine**: Automatically extracts active CWD (`/proc/<pid>/cwd`), directory files, tech stack detection (Rust/Cargo, Node/npm, Python, Go, Docker, Git), active shell, OS distro, and recent terminal buffer output to provide hyper-accurate command generation.
 - [x] **Natural Language Text Prompt Bar (`Ctrl+Shift+A`)**: Inline prompt overlay with typing, cursor, history (`Up`/`Down`), word deletion (`Ctrl+W`), and execution.
 - [x] **Local Voice Capture & STT (`Ctrl+Shift+S`)**: Hands-free voice capture with silence auto-cutoff (`cpal` + `whisper-rs`).
 - [x] **Local LLM Engine**: REST API client querying local LLM daemon (Ollama / Qwen / Llama).
-- [x] **Visual Feedback**: Real-time stage updates (*"🎙️ Recording..."*, *"⚙️ Transcribing..."*, *"🤖 Generating LLM..."*) and error notifications in the message bar.
+- [x] **Visual Feedback**: Real-time stage updates (*LISTENING*, *TRANSCRIBING*, *SENT ... waiting for reply*) with a live seconds counter and mic level meter; errors stay on screen until a key press.
 - [x] **Configurable LLM Settings**: Configurable model, temperature, timeout, and tilde `~` path resolution.
 - [ ] **Error Diagnosis & Fix (`Ctrl+Shift+E`)**: Analyze recent terminal errors and suggest automated fixes.
 
