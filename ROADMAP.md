@@ -172,6 +172,14 @@ Custom desktop shell, on-device fine-tuning or LoRA for personal workflows, mult
 
 ---
 
+## Branching
+
+- **`master`** is the Kourage app and the only long-lived branch for now. Work lands here directly.
+- When the distro work (Stage 3 onward) starts, create one **`os`** branch for it. From then on there are exactly two long-lived branches: the app and the OS.
+- No archive or stage branches: history lives in git tags and commits, and old code is not kept on branches nobody will use. Short-lived topic branches are fine and get deleted after merging.
+
+---
+
 ## Cross-cutting risks
 
 | Risk | Mitigation |
