@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
@@ -226,6 +226,14 @@ fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<Strin
     let audio_samples =
         to_whisper_input(&recording.samples, recording.channels, recording.sample_rate);
 
+    if log::max_level() >= log::LevelFilter::Debug {
+        let path = format!("/tmp/kourage-voice-{}.wav", std::process::id());
+        match std::fs::write(&path, encode_wav_16k_mono(&audio_samples)) {
+            Ok(()) => info!("Wrote voice debug audio to {}", path),
+            Err(err) => warn!("Failed to write voice debug audio to {}: {}", path, err),
+        }
+    }
+
     let params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
     state
@@ -241,6 +249,28 @@ fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<Strin
     }
 
     Ok(result)
+}
+
+/// Encode 16 kHz mono samples as a 16-bit PCM WAV file (for debug dumps).
+fn encode_wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + samples.len() * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&WHISPER_SAMPLE_RATE.to_le_bytes());
+    wav.extend_from_slice(&(WHISPER_SAMPLE_RATE * 2).to_le_bytes()); // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    wav
 }
 
 #[derive(Serialize)]
@@ -535,5 +565,23 @@ mod tests {
         static FLAG: AtomicBool = AtomicBool::new(false);
         drop(BusyGuard::try_acquire(&FLAG));
         assert!(BusyGuard::try_acquire(&FLAG).is_some());
+    }
+
+    #[test]
+    fn wav_header_is_valid() {
+        let wav = encode_wav_16k_mono(&[0.0, 0.5, -0.5]);
+        assert_eq!(wav.len(), 44 + 6);
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 6);
+    }
+
+    #[test]
+    fn wav_clamps_and_scales() {
+        let wav = encode_wav_16k_mono(&[1.0, -1.0, 2.0]);
+        let pcm: Vec<i16> =
+            wav[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        assert_eq!(pcm, vec![32767, -32767, 32767]);
     }
 }

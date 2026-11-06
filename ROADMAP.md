@@ -34,9 +34,9 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 - [ ] There's no way to cancel a recording, and no push-to-talk.
 - [ ] The Whisper model is loaded from disk on every command (slow). The default `whisper_model_path` is a placeholder, so voice fails out of the box with no guidance.
 - [ ] Pasting into the prompt doesn't work (Paste is blocked while the overlay is open; it should insert into the prompt).
-- [ ] **Next up (found 2026-11-06 in a live test):** the model replied `` `du -sh .` `` with single backticks. Only triple-backtick blocks are stripped, so bash ran it as command substitution and tried to execute du's output. Strip single backticks too, with tests.
-- [ ] **Next up:** voice transcribed "Bye." (a typical Whisper hallucination on near-silence) after only 2.5 s of recording, so the recording probably stopped before the user spoke. Add a debug dump of the 16 kHz audio to `/tmp` (when debug logging is on), listen to it, then tune `SPEECH_RMS_THRESHOLD` and the timings.
-- [ ] **Next up:** the preview marked `exit` as safe, and running it closed the terminal. Flag commands that end the session (`exit`, `logout`, `kill $$`, `exec …`).
+- [x] ~~**Next up (found 2026-11-06 in a live test):** the model replied `` `du -sh .` `` with single backticks. Only triple-backtick blocks are stripped, so bash ran it as command substitution and tried to execute du's output. Strip single backticks too, with tests.~~ Fixed: `clean_llm_reply` (tested) strips fences and a wrapping backtick pair.
+- [ ] **Next up (dump added, tuning pending):** voice transcribed "Bye." (a typical Whisper hallucination on near-silence) after only 2.5 s of recording, so the recording probably stopped before the user spoke. Add a debug dump of the 16 kHz audio to `/tmp` (when debug logging is on), listen to it, then tune `SPEECH_RMS_THRESHOLD` and the timings. The dump now exists: run with `-vv` and listen to `/tmp/kourage-voice-<pid>.wav`.
+- [x] ~~**Next up:** the preview marked `exit` as safe, and running it closed the terminal. Flag commands that end the session (`exit`, `logout`, `kill $$`, `exec …`).~~ Fixed (tested).
 - [ ] Voice has no default binding on macOS (it lives in `common_keybindings`, which excludes macOS).
 
 **LLM client robustness:**
