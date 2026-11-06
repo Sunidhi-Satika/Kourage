@@ -73,8 +73,9 @@ pub struct UiConfig {
     /// Bell configuration.
     pub bell: BellConfig,
 
-    /// Voice action configuration.
-    pub voice: Voice,
+    /// AI configuration (LLM and voice). `[voice]` is accepted as the old name for `[ai]`.
+    #[config(alias = "voice")]
+    pub ai: Voice,
 
     /// RGB values for colors.
     pub colors: Colors,

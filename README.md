@@ -93,10 +93,10 @@ ollama run qwen2.5-coder:3b # or: ollama run llama3
 
 ### 4. Configure Alacritty
 
-Add the `[voice]` section to your `alacritty.toml` (located at `~/.config/alacritty/alacritty.toml`):
+Add the `[ai]` section to your `alacritty.toml` (located at `~/.config/alacritty/alacritty.toml`; the old name `[voice]` still works):
 
 ```toml
-[voice]
+[ai]
 whisper_model_path = "~/.config/alacritty/models/ggml-tiny.bin"
 llm_api_url = "http://localhost:11434/api/generate"
 model = "qwen2.5-coder:3b" # or "llama3"
@@ -147,10 +147,10 @@ Run `./target/debug/alacritty -v` to see log output. Kourage's own messages tell
 | Message | Cause and fix |
 | :--- | :--- |
 | `Can't reach the AI server at …` | Ollama isn't running. Start it with `ollama serve` (install it inside WSL if you use WSL, not on Windows). Check with `curl localhost:11434/api/tags`. |
-| `The model "…" isn't installed` | Run `ollama pull qwen2.5-coder:3b` (or the model named in `[voice] model`). |
-| `The AI server … did not answer within …s` | The model is still loading, or the machine is slow. Try again, or raise `[voice] timeout_secs`. |
+| `The model "…" isn't installed` | Run `ollama pull qwen2.5-coder:3b` (or the model named in `[ai] model`). |
+| `The AI server … did not answer within …s` | The model is still loading, or the machine is slow. Try again, or raise `[ai] timeout_secs`. |
 | `The model returned N lines but a single command is required` | The model ignored the one-line rule. Rephrase the request. |
-| `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[voice] whisper_model_path`. |
+| `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[ai] whisper_model_path`. |
 | `No audio input device found` / ALSA errors | No microphone is visible. On WSL2, install `alsa-utils pulseaudio-utils libasound2-plugins` and check `pactl list short sources`. |
 | Voice transcribes "Bye." or nothing | The recording probably stopped before you spoke. Run with `-vv`, then listen to `/tmp/kourage-voice-<pid>-<time>.wav` and report what you hear. |
 

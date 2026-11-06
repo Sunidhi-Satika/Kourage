@@ -33,7 +33,7 @@ pub fn whisper_missing_message(path: &str) -> String {
     format!(
         "Whisper model not found at \"{path}\". Download one (e.g. ggml-base.en.bin from \
          https://huggingface.co/ggerganov/whisper.cpp/tree/main) and set \
-         [voice] whisper_model_path in alacritty.toml."
+         [ai] whisper_model_path in alacritty.toml."
     )
 }
 

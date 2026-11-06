@@ -505,7 +505,7 @@ pub fn handle_voice_command(
         return;
     };
 
-    let voice_config = config.voice.clone();
+    let voice_config = config.ai.clone();
     let proxy = proxy.clone();
 
     thread::spawn(move || {
@@ -609,7 +609,7 @@ pub fn handle_text_prompt(
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
 ) {
-    let voice_config = config.voice.clone();
+    let voice_config = config.ai.clone();
     let proxy = proxy.clone();
 
     thread::spawn(move || {

@@ -56,5 +56,22 @@ mod tests {
         assert_eq!(voice.temperature, 0.2);
         assert_eq!(voice.timeout_secs, 30);
     }
-}
 
+    fn ui_config_from(toml_str: &str) -> crate::config::ui_config::UiConfig {
+        let table: Table = toml::from_str(toml_str).unwrap();
+        crate::config::ui_config::UiConfig::deserialize(toml::Value::Table(table)).unwrap()
+    }
+
+    #[test]
+    fn ai_section_configures_the_llm() {
+        let config = ui_config_from("[ai]\nmodel = \"llama3:8b\"\ntimeout_secs = 40\n");
+        assert_eq!(config.ai.model, "llama3:8b");
+        assert_eq!(config.ai.timeout_secs, 40);
+    }
+
+    #[test]
+    fn legacy_voice_section_still_works() {
+        let config = ui_config_from("[voice]\nmodel = \"old:1b\"\n");
+        assert_eq!(config.ai.model, "old:1b");
+    }
+}
