@@ -16,20 +16,33 @@ Path: **AI in an app → AI as a system service → AI as the default experience
 
 ## Where we are (Stage 0: mostly built, not finished)
 
-Working in the Alacritty fork: prompt bar, voice via Whisper, Ollama client, context engine (cwd, shell, OS, tech stack, buffer), and a preview and destructive-command guard. The project builds and its 91 tests pass, but the gaps below block calling Stage 0 done.
+Working in the Alacritty fork: prompt bar, voice via Whisper, Ollama client, context engine (cwd, shell, OS, tech stack, buffer), and a preview and destructive-command guard. The project builds and its tests pass, but the open gaps below block calling Stage 0 done.
 
 The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `voice.rs`) is Stage 1's job. The items below are Stage 0's own unfinished business.
 
 ### Stage 0 gaps
 
-**Voice is broken (must fix):**
-- `record_audio` writes a 32-bit float WAV, but `transcribe_audio` reads it back as `i16`. hound 3.5.1 rejects that (`InvalidSampleFormat`, reproduced), so every voice command fails at transcription.
-- Audio is never resampled. Whisper needs 16 kHz mono, but the recording uses the device rate (usually 44.1/48 kHz). Only exactly 2 channels are downmixed.
-- The input callback is hard-typed to `f32`, so stream creation fails on devices whose default format is `i16`/`u16`.
-- Silence detection can stop the recording before the user starts speaking (about 30 quiet callbacks). There's no way to cancel a recording, and no push-to-talk.
-- The Whisper model is loaded from disk on every command (slow). The default `whisper_model_path` is a placeholder, so voice fails out of the box with no guidance.
+**Voice and hotkeys:**
+- [x] ~~Float WAV written, read back as `i16`.~~ Fixed: audio now stays in memory, so there's no WAV round-trip.
+- [x] ~~No resampling to 16 kHz; only 2-channel downmix.~~ Fixed: any channel count and any rate are converted (`to_whisper_input`, tested).
+- [x] ~~Silence detection stops before the user speaks.~~ Fixed: silence only counts after speech is heard (1 s trailing), and recording gives up after 6 s with no speech (`SilenceDetector`, tested).
+- [x] ~~Holding Ctrl+Shift+S starts many overlapping recordings ("Connection refused" from ALSA).~~ Fixed: only one voice session runs at a time (`BusyGuard`, tested).
+- [x] ~~The prompt hotkey Ctrl+Shift+Space needs two presses under WSLg (the first Space never arrives), and it took vi mode's upstream binding.~~ Fixed: the prompt is now Ctrl+Shift+A, and Ctrl+Shift+Space toggles vi mode again.
+- [x] ~~Backspace (and any other bound key) inside the prompt or preview goes to the shell.~~ Fixed: only the prompt toggle binding fires while the overlay is open.
+- [ ] The input callback is hard-typed to `f32`, so stream creation fails on devices whose default format is `i16`/`u16`.
+- [ ] Resampling is linear with no anti-alias filter. Fine for speech, but revisit if accuracy suffers.
+- [ ] There's no way to cancel a recording, and no push-to-talk.
+- [ ] The Whisper model is loaded from disk on every command (slow). The default `whisper_model_path` is a placeholder, so voice fails out of the box with no guidance.
+- [ ] Pasting into the prompt doesn't work (Paste is blocked while the overlay is open; it should insert into the prompt).
+- [ ] **Next up (found 2026-11-06 in a live test):** the model replied `` `du -sh .` `` with single backticks. Only triple-backtick blocks are stripped, so bash ran it as command substitution and tried to execute du's output. Strip single backticks too, with tests.
+- [ ] **Next up:** voice transcribed "Bye." (a typical Whisper hallucination on near-silence) after only 2.5 s of recording, so the recording probably stopped before the user spoke. Add a debug dump of the 16 kHz audio to `/tmp` (when debug logging is on), listen to it, then tune `SPEECH_RMS_THRESHOLD` and the timings.
+- [ ] **Next up:** the preview marked `exit` as safe, and running it closed the terminal. Flag commands that end the session (`exit`, `logout`, `kill $$`, `exec …`).
+- [ ] Voice has no default binding on macOS (it lives in `common_keybindings`, which excludes macOS).
 
 **LLM client robustness:**
+- No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`.
+- The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test.
+- Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt.
 - If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`").
 - The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview.
 - An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar. The blocking 15 s timeout fits small models only.
@@ -44,6 +57,8 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 **Testing and quality:**
 - No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines.
 - No mock LLM backend, so the end-to-end flow can't be tested in CI.
+- `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed.
+- Testing tip: `cargo test` doesn't rebuild the app binary. Run `cargo build` before manual testing (a stale March binary cost us a debugging round).
 
 **Docs and first-run:**
 - The README describes the happy path, but there's no troubleshooting section (no mic, no model, Ollama down) and no list of keybindings for the preview (confirm/edit/cancel).
@@ -63,8 +78,9 @@ TODO for WSL setup (on any Windows machine):
 - [ ] Clone the repo and run `cargo build` and `cargo test -p alacritty`. Install the build deps from `INSTALL.md`, plus `clang`/`libclang` for whisper-rs and `libasound2-dev` for cpal.
 - [ ] Install and check audio tooling: `sudo apt install alsa-utils pulseaudio-utils libasound2-plugins`. Then `pactl list short sources` should show WSLg's `RDPSource`, and `arecord -d 3 -f cd /tmp/t.wav && aplay /tmp/t.wav` should play back your voice. If ALSA finds no device, add an `~/.asoundrc` routing `default` to `pulse`.
 - [ ] Install Ollama **inside WSL**, not on Windows, because WSL can't reach Windows' `localhost` without mirrored networking. Run `ollama pull qwen2.5-coder:3b`, and check that `curl localhost:11434/api/tags` lists it.
-- [ ] Download a Whisper model to `~/.config/alacritty/models/ggml-tiny.bin` and point `[voice] whisper_model_path` at it in `~/.config/alacritty/alacritty.toml`.
-- [ ] Smoke test: the text prompt (Ctrl+Shift+Space) should work. Voice (Ctrl+Shift+S) is expected to fail at "Whisper transcription failed" until the WAV format bug above is fixed. Confirm this, then start on the Stage 0 gaps.
+- [ ] Download a Whisper model (e.g. `ggml-base.en.bin`) to `~/.config/alacritty/models/` and point `[voice] whisper_model_path` at it in `~/.config/alacritty/alacritty.toml`.
+- [ ] Run `cargo build`, then smoke test with `./target/debug/alacritty -v`: Ctrl+Shift+A opens the prompt, and Ctrl+Shift+S records and transcribes voice. For key debugging, set `[debug] print_events = true` and `persistent_logging = true`, then read `/tmp/Alacritty-<pid>.log`.
+- [ ] Ollama installed without root: download `ollama-linux-amd64.tar.zst` from ollama.com, extract it to `~/.local/ollama`, and run `~/.local/ollama/bin/ollama serve`.
 
 **Exit criteria for Stage 0:** voice works end to end on a stock Ubuntu laptop mic; Ollama-down and model-missing produce helpful messages; multi-line LLM output can't slip through; the safety table test passes; a fresh user can go from clone to first working command using only the README.
 

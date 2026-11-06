@@ -482,9 +482,11 @@ pub fn default_key_bindings() -> Vec<KeyBinding> {
         Backspace, ModifiersState::ALT,     ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\x1b\x7f".into());
         Backspace, ModifiersState::SHIFT,   ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\x7f".into());
         Enter => KeyLocation::Numpad, ~BindingMode::VI, ~BindingMode::SEARCH, ~BindingMode::REPORT_ALL_KEYS_AS_ESC, ~BindingMode::DISAMBIGUATE_ESC_CODES; Action::Esc("\n".into());
-        // AI Prompt
-        Space, ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH, ~BindingMode::VI; Action::ToggleAiPrompt;
+        // AI prompt ("Ask"). Not on Ctrl+Shift+Space: the first Space of that chord is
+        // swallowed under WSLg, and Ctrl+Space is an input-source switch on macOS.
+        "a", ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH, ~BindingMode::VI; Action::ToggleAiPrompt;
         // Vi mode.
+        Space, ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH; Action::ToggleViMode;
         Space, ModifiersState::SHIFT | ModifiersState::CONTROL, +BindingMode::VI, ~BindingMode::SEARCH; Action::ScrollToBottom;
         Escape,                             +BindingMode::VI, ~BindingMode::SEARCH; Action::ClearSelection;
         "i",                                +BindingMode::VI, ~BindingMode::SEARCH; Action::ToggleViMode;
@@ -1291,6 +1293,36 @@ mod tests {
                 trigger: Default::default(),
             }
         }
+    }
+
+    /// Actions the default key bindings trigger for a key pressed in a given mode.
+    fn default_actions_for(key: Key, mods: ModifiersState, mode: BindingMode) -> Vec<Action> {
+        let input = BindingKey::Keycode { key, location: KeyLocation::Standard };
+        default_key_bindings()
+            .into_iter()
+            .filter(|binding| binding.is_triggered_by(mode, mods, &input))
+            .map(|binding| binding.action)
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_shift_a_toggles_ai_prompt() {
+        let actions = default_actions_for(
+            Key::Character("a".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            BindingMode::empty(),
+        );
+        assert_eq!(actions, vec![Action::ToggleAiPrompt]);
+    }
+
+    #[test]
+    fn ctrl_shift_space_toggles_vi_mode_like_upstream() {
+        let actions = default_actions_for(
+            Key::Named(NamedKey::Space),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            BindingMode::empty(),
+        );
+        assert_eq!(actions, vec![Action::ToggleViMode]);
     }
 
     #[test]

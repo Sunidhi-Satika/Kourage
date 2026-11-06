@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,8 +10,6 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use hound::WavWriter;
-use tempfile::NamedTempFile;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::config::ui_config::UiConfig;
@@ -21,6 +18,98 @@ use crate::event::{Event, EventType};
 use crate::message_bar::{Message, MessageType};
 
 pub const LOG_TARGET_VOICE: &str = "alacritty_voice";
+
+/// Held while a voice session runs; a second session is refused until it is dropped.
+struct BusyGuard(&'static AtomicBool);
+
+impl BusyGuard {
+    fn try_acquire(flag: &'static AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).ok()?;
+        Some(Self(flag))
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Set while a voice command is recording/transcribing/generating.
+static VOICE_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Sample rate Whisper expects.
+const WHISPER_SAMPLE_RATE: u32 = 16_000;
+
+/// Convert interleaved device audio to the 16 kHz mono `f32` Whisper expects.
+fn to_whisper_input(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<f32> {
+    let channels = usize::from(channels.max(1));
+    let mono: Vec<f32> = if channels == 1 {
+        samples.to_vec()
+    } else {
+        samples
+            .chunks_exact(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
+    };
+
+    if sample_rate == WHISPER_SAMPLE_RATE || mono.is_empty() {
+        return mono;
+    }
+
+    // Linear interpolation is enough for speech recognition input.
+    let out_len =
+        (mono.len() as u64 * u64::from(WHISPER_SAMPLE_RATE) / u64::from(sample_rate)) as usize;
+    let step = f64::from(sample_rate) / f64::from(WHISPER_SAMPLE_RATE);
+    (0..out_len)
+        .map(|i| {
+            let pos = i as f64 * step;
+            let idx = pos as usize;
+            let frac = (pos - idx as f64) as f32;
+            let a = mono[idx];
+            let b = *mono.get(idx + 1).unwrap_or(&a);
+            a + (b - a) * frac
+        })
+        .collect()
+}
+
+/// RMS above which a chunk counts as speech.
+const SPEECH_RMS_THRESHOLD: f32 = 0.005;
+/// Trailing silence that ends a recording once the user has spoken.
+const TRAILING_SILENCE: Duration = Duration::from_secs(1);
+/// How long to wait for the user to start speaking before giving up.
+const NO_SPEECH_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Decides when to stop recording based on per-chunk loudness.
+///
+/// Silence only ends a recording after speech was heard, so the user has time to start
+/// talking; if they never do, recording gives up after [`NO_SPEECH_TIMEOUT`].
+struct SilenceDetector {
+    heard_speech: bool,
+    silence: Duration,
+}
+
+impl SilenceDetector {
+    fn new() -> Self {
+        Self { heard_speech: false, silence: Duration::ZERO }
+    }
+
+    /// Feed one audio chunk's RMS and duration; returns `true` when recording should stop.
+    fn push(&mut self, rms: f32, chunk: Duration) -> bool {
+        if rms >= SPEECH_RMS_THRESHOLD {
+            self.heard_speech = true;
+            self.silence = Duration::ZERO;
+            return false;
+        }
+
+        self.silence += chunk;
+        if self.heard_speech {
+            self.silence >= TRAILING_SILENCE
+        } else {
+            self.silence >= NO_SPEECH_TIMEOUT
+        }
+    }
+}
 
 pub fn init() {
     // Initialization logic if needed
@@ -53,55 +142,42 @@ fn resolve_path(path_str: &str) -> PathBuf {
     PathBuf::from(path_str)
 }
 
-fn record_audio(path: &Path) -> Result<(), anyhow::Error> {
+/// Audio captured from the default input device, still in the device's own format.
+struct Recording {
+    samples: Vec<f32>,
+    channels: u16,
+    sample_rate: u32,
+}
+
+fn record_audio() -> Result<Recording, anyhow::Error> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .ok_or_else(|| anyhow::anyhow!("No audio input device found"))?;
     let config = device.default_input_config()?;
+    let channels = config.channels();
+    let sample_rate = config.sample_rate().0;
 
-    let spec = hound::WavSpec {
-        channels: config.channels() as _,
-        sample_rate: config.sample_rate().0,
-        bits_per_sample: (config.sample_format().sample_size() * 8) as _,
-        sample_format: hound::SampleFormat::Float,
-    };
-
-    let writer = Arc::new(Mutex::new(Some(WavWriter::create(path, spec)?)));
-    let writer_clone = writer.clone();
+    let samples = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let samples_clone = samples.clone();
 
     let should_stop = Arc::new(AtomicBool::new(false));
     let should_stop_clone = should_stop.clone();
-    let silence_count = Arc::new(Mutex::new(0));
-    let silence_count_clone = silence_count.clone();
-
-    // Parameters for silence detection
-    let threshold = 0.005; // RMS threshold
-    let silence_limit = 30; // Number of consecutive silent callbacks (roughly 1-2 seconds)
+    let mut detector = SilenceDetector::new();
 
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let mut sum_sq = 0.0;
-            if let Some(writer) = writer_clone.lock().unwrap().as_mut() {
-                for &sample in data.iter() {
-                    writer
-                        .write_sample(sample)
-                        .unwrap_or_else(|e| error!("Failed to write sample: {}", e));
-                    sum_sq += sample * sample;
-                }
+            if data.is_empty() {
+                return;
             }
+            samples_clone.lock().unwrap().extend_from_slice(data);
 
-            let rms = (sum_sq / data.len() as f32).sqrt();
-            if rms < threshold {
-                let mut count = silence_count_clone.lock().unwrap();
-                *count += 1;
-                if *count > silence_limit {
-                    should_stop_clone.store(true, Ordering::SeqCst);
-                }
-            } else {
-                let mut count = silence_count_clone.lock().unwrap();
-                *count = 0;
+            let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
+            let frames = data.len() / usize::from(channels.max(1));
+            let chunk = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate));
+            if detector.push(rms, chunk) {
+                should_stop_clone.store(true, Ordering::SeqCst);
             }
         },
         |err| {
@@ -121,13 +197,14 @@ fn record_audio(path: &Path) -> Result<(), anyhow::Error> {
     }
 
     stream.pause()?;
-    *writer.lock().unwrap() = None;
+    drop(stream);
     info!("Recording stopped.");
 
-    Ok(())
+    let samples = std::mem::take(&mut *samples.lock().unwrap());
+    Ok(Recording { samples, channels, sample_rate })
 }
 
-fn transcribe_audio(path: &Path, model_path_str: &str) -> Result<String, anyhow::Error> {
+fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<String, anyhow::Error> {
     let resolved_model_path = resolve_path(model_path_str);
     if !resolved_model_path.exists() {
         return Err(anyhow::anyhow!(
@@ -146,17 +223,8 @@ fn transcribe_audio(path: &Path, model_path_str: &str) -> Result<String, anyhow:
         .create_state()
         .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {:?}", e))?;
 
-    let file = File::open(path)?;
-    let mut reader = hound::WavReader::new(std::io::BufReader::new(file))?;
-    let samples: Vec<i16> = reader.samples().collect::<Result<_, _>>()?;
-    let mut audio_samples: Vec<f32> = samples
-        .into_iter()
-        .map(|s| s as f32 / 32768.0)
-        .collect();
-
-    if reader.spec().channels == 2 {
-        audio_samples = whisper_rs::convert_stereo_to_mono_audio(&audio_samples)?;
-    }
+    let audio_samples =
+        to_whisper_input(&recording.samples, recording.channels, recording.sample_rate);
 
     let params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
@@ -211,18 +279,20 @@ fn call_llm(
         model: voice_config.model.clone(),
         prompt,
         stream: false,
-        options: Some(LlmOptions {
-            temperature: voice_config.temperature,
-        }),
+        options: Some(LlmOptions { temperature: voice_config.temperature }),
     };
 
     let res = client
         .post(&voice_config.llm_api_url)
         .json(&request)
         .send()
-        .map_err(|e| anyhow::anyhow!("HTTP request to \"{}\" failed: {}", voice_config.llm_api_url, e))?
+        .map_err(|e| {
+            anyhow::anyhow!("HTTP request to \"{}\" failed: {}", voice_config.llm_api_url, e)
+        })?
         .json::<LlmResponse>()
-        .map_err(|e| anyhow::anyhow!("Failed to parse response from {}: {}", voice_config.llm_api_url, e))?;
+        .map_err(|e| {
+            anyhow::anyhow!("Failed to parse response from {}: {}", voice_config.llm_api_url, e)
+        })?;
 
     let mut cmd = res.response.trim().to_string();
     if cmd.starts_with("```") {
@@ -248,10 +318,18 @@ pub fn handle_voice_command(
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
 ) {
+    // Holding the hotkey auto-repeats it; only one voice session may own the mic.
+    let Some(busy) = BusyGuard::try_acquire(&VOICE_BUSY) else {
+        info!("Voice command already in progress; ignoring trigger");
+        return;
+    };
+
     let voice_config = config.voice.clone();
     let proxy = proxy.clone();
 
     thread::spawn(move || {
+        let _busy = busy;
+
         // Stage 1: Audio recording
         send_status(
             &proxy,
@@ -260,24 +338,15 @@ pub fn handle_voice_command(
             MessageType::Warning,
         );
 
-        let temp_file = match NamedTempFile::new() {
-            Ok(file) => file,
+        let recording = match record_audio() {
+            Ok(recording) => recording,
             Err(e) => {
-                let err_msg = format!("Failed to create temporary audio file: {e}");
+                let err_msg = format!("Audio recording failed: {e}");
                 error!("{err_msg}");
                 send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
                 return;
-            }
+            },
         };
-
-        let temp_path = temp_file.path().to_path_buf();
-
-        if let Err(e) = record_audio(&temp_path) {
-            let err_msg = format!("Audio recording failed: {e}");
-            error!("{err_msg}");
-            send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
-            return;
-        }
 
         // Stage 2: Speech transcription
         send_status(
@@ -287,14 +356,15 @@ pub fn handle_voice_command(
             MessageType::Warning,
         );
 
-        let transcribed_text = match transcribe_audio(&temp_path, &voice_config.whisper_model_path) {
+        let transcribed_text = match transcribe_audio(&recording, &voice_config.whisper_model_path)
+        {
             Ok(text) => text.trim().to_string(),
             Err(e) => {
                 let err_msg = format!("Whisper transcription failed: {e}");
                 error!("{err_msg}");
                 send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
                 return;
-            }
+            },
         };
 
         if transcribed_text.is_empty() {
@@ -324,7 +394,7 @@ pub fn handle_voice_command(
                 error!("{err_msg}");
                 send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
                 return;
-            }
+            },
         };
 
         info!("Command from LLM: {}", command_from_llm);
@@ -335,10 +405,7 @@ pub fn handle_voice_command(
         // Send command to interactive preview & safety guard
         let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
         let event = Event::new(
-            EventType::AiPreview {
-                command: command_from_llm,
-                is_destructive,
-            },
+            EventType::AiPreview { command: command_from_llm, is_destructive },
             window_id,
         );
         let _ = proxy.send_event(event);
@@ -373,7 +440,7 @@ pub fn handle_text_prompt(
                 error!("{err_msg}");
                 send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
                 return;
-            }
+            },
         };
 
         info!("Command from LLM: {}", command_from_llm);
@@ -384,14 +451,98 @@ pub fn handle_text_prompt(
         // Send command to interactive preview & safety guard
         let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
         let event = Event::new(
-            EventType::AiPreview {
-                command: command_from_llm,
-                is_destructive,
-            },
+            EventType::AiPreview { command: command_from_llm, is_destructive },
             window_id,
         );
         let _ = proxy.send_event(event);
     });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    const CHUNK: Duration = Duration::from_millis(10);
+
+    #[test]
+    fn whisper_input_passes_16k_mono_through() {
+        let samples = vec![0.1, -0.2, 0.3];
+        assert_eq!(to_whisper_input(&samples, 1, 16_000), samples);
+    }
+
+    #[test]
+    fn whisper_input_downmixes_stereo_by_averaging() {
+        let out = to_whisper_input(&[1.0, 0.0, 0.5, 0.5], 2, 16_000);
+        assert_eq!(out, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn whisper_input_downmixes_any_channel_count() {
+        let out = to_whisper_input(&[0.3, 0.3, 0.3, 0.6, 0.6, 0.6], 3, 16_000);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.3).abs() < 1e-6 && (out[1] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn whisper_input_resamples_48k_to_16k() {
+        let one_second = vec![0.25; 48_000];
+        let out = to_whisper_input(&one_second, 1, 48_000);
+        assert_eq!(out.len(), 16_000);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn whisper_input_resamples_44_1k_to_16k() {
+        let out = to_whisper_input(&vec![0.0; 44_100], 1, 44_100);
+        assert_eq!(out.len(), 16_000);
+    }
+
+    #[test]
+    fn silence_before_speech_does_not_stop_recording() {
+        let mut detector = SilenceDetector::new();
+        // Three seconds of the user getting ready to talk.
+        for _ in 0..300 {
+            assert!(!detector.push(0.0, CHUNK));
+        }
+    }
+
+    #[test]
+    fn silence_after_speech_stops_recording() {
+        let mut detector = SilenceDetector::new();
+        for _ in 0..50 {
+            assert!(!detector.push(0.1, CHUNK));
+        }
+        let mut stopped_after = None;
+        for i in 1..=300 {
+            if detector.push(0.0, CHUNK) {
+                stopped_after = Some(i);
+                break;
+            }
+        }
+        // Stops after roughly a second of trailing silence, not instantly and not never.
+        let chunks = stopped_after.expect("recording never stopped");
+        assert!((90..=110).contains(&chunks), "stopped after {chunks} quiet chunks");
+    }
+
+    #[test]
+    fn no_speech_at_all_eventually_stops() {
+        let mut detector = SilenceDetector::new();
+        let stopped = (0..1000).any(|_| detector.push(0.0, CHUNK));
+        assert!(stopped, "should give up after waiting several seconds for speech");
+    }
+
+    #[test]
+    fn busy_guard_rejects_second_session_while_first_runs() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let first = BusyGuard::try_acquire(&FLAG);
+        assert!(first.is_some());
+        assert!(BusyGuard::try_acquire(&FLAG).is_none());
+    }
+
+    #[test]
+    fn busy_guard_releases_on_drop() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        drop(BusyGuard::try_acquire(&FLAG));
+        assert!(BusyGuard::try_acquire(&FLAG).is_some());
+    }
+}

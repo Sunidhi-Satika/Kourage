@@ -297,15 +297,20 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         };
 
         // Trigger matching key bindings.
+        let ai_overlay_active = self.ctx.ai_prompt_active() || self.ctx.ai_preview_active();
         for i in 0..self.ctx.config().key_bindings().len() {
             let binding = &self.ctx.config().key_bindings()[i];
+            if ai_overlay_active && !binding_allowed_in_ai_overlay(&binding.action) {
+                continue;
+            }
             if let Some(action) = binding_action(binding) {
                 action.execute(&mut self.ctx);
             }
         }
 
-        // Trigger key bindings for hints.
-        for i in 0..self.ctx.config().hints.enabled.len() {
+        // Trigger key bindings for hints, unless the AI overlay owns the keyboard.
+        let hint_count = if ai_overlay_active { 0 } else { self.ctx.config().hints.enabled.len() };
+        for i in 0..hint_count {
             let hint = &self.ctx.config().hints.enabled[i];
             let binding = match hint.binding.as_ref() {
                 Some(binding) => binding.key_binding(hint),
@@ -364,6 +369,14 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 ///
 /// The key sequences for `APP_KEYPAD` and alike are handled inside the bindings.
 #[inline(never)]
+/// Whether a key binding may fire while the AI prompt or preview owns the keyboard.
+///
+/// Bindings run before the overlay sees the key, so without this filter default bindings
+/// such as Backspace (`\x7f` to the PTY) would bypass the prompt and reach the shell.
+fn binding_allowed_in_ai_overlay(action: &Action) -> bool {
+    matches!(action, Action::ToggleAiPrompt)
+}
+
 fn build_sequence(key: KeyEvent, mods: ModifiersState, mode: TermMode) -> Vec<u8> {
     let mut modifiers = mods.into();
 
@@ -787,4 +800,28 @@ fn is_control_character(text: &str) -> bool {
     // does not match the reported text (`^H`), despite not technically being part of C0 or C1.
     let codepoint = text.bytes().next().unwrap();
     text.len() == 1 && (codepoint < 0x20 || (0x7f..=0x9f).contains(&codepoint))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_overlay_blocks_backspace_binding() {
+        // The default Backspace binding writes DEL straight to the PTY; while the AI
+        // prompt is open that must not happen, the prompt handles Backspace itself.
+        assert!(!binding_allowed_in_ai_overlay(&Action::Esc("\x7f".into())));
+    }
+
+    #[test]
+    fn ai_overlay_blocks_terminal_actions() {
+        assert!(!binding_allowed_in_ai_overlay(&Action::Paste));
+        assert!(!binding_allowed_in_ai_overlay(&Action::VoiceCommand));
+        assert!(!binding_allowed_in_ai_overlay(&Action::ToggleViMode));
+    }
+
+    #[test]
+    fn ai_overlay_allows_closing_the_prompt() {
+        assert!(binding_allowed_in_ai_overlay(&Action::ToggleAiPrompt));
+    }
 }
