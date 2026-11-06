@@ -80,6 +80,33 @@ pub fn cancel_recording() -> bool {
     VOICE_SESSION.request_cancel()
 }
 
+/// Strip Whisper's non-speech markers (`[BLANK_AUDIO]`, `(music)`) and known silence
+/// hallucinations from a transcript. An empty result means nothing intelligible was said.
+fn clean_transcript(raw: &str) -> String {
+    let mut kept = String::new();
+    let mut closing: Option<char> = None;
+    for c in raw.chars() {
+        match (closing, c) {
+            (None, '[') => closing = Some(']'),
+            (None, '(') => closing = Some(')'),
+            (None, '*') => closing = Some('*'),
+            (Some(close), c) if c == close => closing = None,
+            (Some(_), _) => (),
+            (None, c) => kept.push(c),
+        }
+    }
+
+    let text = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = text.trim_end_matches(['.', '!', '?', ',']).to_lowercase();
+    // What Whisper tends to "hear" in near-silence.
+    const SILENCE_HALLUCINATIONS: [&str; 5] =
+        ["bye", "you", "thank you", "thanks", "thanks for watching"];
+    if SILENCE_HALLUCINATIONS.contains(&normalized.as_str()) {
+        return String::new();
+    }
+    text
+}
+
 /// Sample rate Whisper expects.
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
@@ -541,7 +568,7 @@ pub fn handle_voice_command(
 
         let transcribed_text = match transcribe_audio(&recording, &voice_config.whisper_model_path)
         {
-            Ok(text) => text.trim().to_string(),
+            Ok(text) => clean_transcript(&text),
             Err(e) => {
                 let err_msg = format!("Whisper transcription failed: {e}");
                 error!("{err_msg}");
@@ -820,5 +847,30 @@ mod tests {
         session.begin_recording();
         session.end_recording();
         assert!(!session.request_cancel());
+    }
+
+    #[test]
+    fn transcript_keeps_real_speech() {
+        assert_eq!(clean_transcript("  list all files "), "list all files");
+        assert_eq!(clean_transcript("show disk usage [BLANK_AUDIO]"), "show disk usage");
+    }
+
+    #[test]
+    fn transcript_drops_non_speech_markers() {
+        for raw in ["[BLANK_AUDIO]", " [ Silence ] ", "(music)", "[MUSIC] (soft music)", "*sigh*"] {
+            assert_eq!(clean_transcript(raw), "", "input: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn transcript_drops_known_silence_hallucinations() {
+        for raw in ["Bye.", "bye", "Thank you.", "Thanks for watching!", "you"] {
+            assert_eq!(clean_transcript(raw), "", "input: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn transcript_keeps_commands_that_merely_contain_those_words() {
+        assert_eq!(clean_transcript("say bye to the old files"), "say bye to the old files");
     }
 }
