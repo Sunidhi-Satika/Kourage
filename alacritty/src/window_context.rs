@@ -537,6 +537,8 @@ impl WindowContext {
     }
 
     /// Submit the pending changes to the `Display`.
+    // See `Display::handle_update`: Stage 1 removes the AI parameters.
+    #[allow(clippy::too_many_arguments)]
     fn submit_display_update(
         terminal: &mut Term<EventProxy>,
         display: &mut Display,

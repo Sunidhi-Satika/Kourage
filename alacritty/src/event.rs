@@ -2424,8 +2424,7 @@ mod tests {
 
     #[test]
     fn test_ai_prompt_input_and_backspace() {
-        let mut prompt = AiPromptState::default();
-        prompt.active = true;
+        let mut prompt = AiPromptState { active: true, ..Default::default() };
         for c in "list all files".chars() {
             prompt.input(c);
         }
@@ -2457,8 +2456,7 @@ mod tests {
 
     #[test]
     fn test_ai_prompt_submit_and_history() {
-        let mut prompt = AiPromptState::default();
-        prompt.active = true;
+        let mut prompt = AiPromptState { active: true, ..Default::default() };
 
         for c in "echo hello".chars() {
             prompt.input(c);
@@ -2489,8 +2487,7 @@ mod tests {
 
     #[test]
     fn test_ai_prompt_empty_submit() {
-        let mut prompt = AiPromptState::default();
-        prompt.active = true;
+        let mut prompt = AiPromptState { active: true, ..Default::default() };
         for c in "   ".chars() {
             prompt.input(c);
         }

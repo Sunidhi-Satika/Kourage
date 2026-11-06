@@ -648,6 +648,8 @@ impl Display {
     // performed in [`Self::process_renderer_update`] right before drawing.
     //
     /// Process update events.
+    // Grew past clippy's limit when the AI overlay state was threaded through; Stage 1 moves it out.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_update<T>(
         &mut self,
         terminal: &mut Term<T>,
@@ -776,6 +778,8 @@ impl Display {
     /// A reference to Term whose state is being drawn must be provided.
     ///
     /// This call may block if vsync is enabled.
+    // See `handle_update`: Stage 1 removes the AI parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw<T: EventListener>(
         &mut self,
         mut terminal: MutexGuard<'_, Term<T>>,

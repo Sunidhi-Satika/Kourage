@@ -74,7 +74,7 @@ impl AiContext {
             for entry in read_dir.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 let file_type = entry.file_type().ok();
-                let is_dir = file_type.map_or(false, |ft| ft.is_dir());
+                let is_dir = file_type.is_some_and(|ft| ft.is_dir());
 
                 let display_name = if is_dir {
                     format!("{}/", file_name)
