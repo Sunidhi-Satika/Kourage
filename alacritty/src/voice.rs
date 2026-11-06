@@ -483,14 +483,7 @@ fn call_llm(
         .json::<LlmResponse>()
         .map_err(|e| anyhow::anyhow!("Unexpected response from {url}: {e}"))?;
 
-    let cmd = crate::ai::require_single_line(&crate::ai::clean_llm_reply(&res.response))
-        .map_err(|msg| anyhow::anyhow!(msg))?;
-
-    if cmd.is_empty() {
-        return Err(anyhow::anyhow!("LLM returned an empty command"));
-    }
-
-    Ok(cmd)
+    crate::ai::finalize_llm_reply(&res.response).map_err(|msg| anyhow::anyhow!(msg))
 }
 
 pub fn handle_voice_command(

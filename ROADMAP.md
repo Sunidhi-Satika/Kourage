@@ -42,7 +42,7 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 **LLM client robustness:**
 - No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`. **Fixed:** requests now send `num_predict: 128`, `repeat_penalty: 1.1` and a `\n\n` stop (`LlmOptions::for_command`, tested).
 - The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test. **Fixed:** `clean_llm_reply` strips fences and backticks (tested).
-- Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt.
+- Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt. **Done:** 10 few-shot examples are now in the prompt (`PROMPT_EXAMPLES`, each tested to be a safe single line). Whether they improve answers is unmeasured: that needs the eval set from `docs/stage0-solutions.md`.
 - If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`"). **Fixed:** `ai/diagnostics.rs` maps connection, 404 and HTTP errors to actionable messages (tested).
 - The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Showing multi-line replies in the preview is still open.
 - An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar. The blocking 15 s timeout fits small models only.
@@ -55,9 +55,9 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 - Needs a table-driven test of dangerous vs safe commands (the roadmap already plans this for Stage 1; it should exist now). **Fixed:** `test_dangerous_command_table` covers about 70 commands.
 
 **Testing and quality:**
-- No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines.
+- No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines. **Done:** added tests for audio conversion, WAV encoding, voice cancel, reply cleanup and finalising, LLM error messages, paste and the safety table. The prompt/preview state machines are still lightly tested.
 - No mock LLM backend, so the end-to-end flow can't be tested in CI.
-- `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed.
+- `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed. **Done:** clippy is clean (CI already runs it).
 - Testing tip: `cargo test` doesn't rebuild the app binary. Run `cargo build` before manual testing (a stale March binary cost us a debugging round).
 
 **Docs and first-run:**

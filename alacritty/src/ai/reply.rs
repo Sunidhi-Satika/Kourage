@@ -36,9 +36,38 @@ pub fn require_single_line(cmd: &str) -> Result<String, String> {
     }
 }
 
+/// Turn a raw model reply into the one command to preview, or explain why it can't be used.
+pub fn finalize_llm_reply(raw: &str) -> Result<String, String> {
+    let cmd = require_single_line(&clean_llm_reply(raw))?;
+    if cmd.is_empty() {
+        return Err("The model returned an empty command. Try rephrasing.".to_string());
+    }
+    Ok(cmd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finalize_accepts_fenced_and_backticked_replies() {
+        assert_eq!(finalize_llm_reply("```bash\nls -la\n```").unwrap(), "ls -la");
+        assert_eq!(finalize_llm_reply("`du -sh .`").unwrap(), "du -sh .");
+    }
+
+    #[test]
+    fn finalize_rejects_empty_replies() {
+        for raw in ["", "   \n", "``", "```\n```"] {
+            let err = finalize_llm_reply(raw).unwrap_err();
+            assert!(err.contains("empty"), "{raw:?} -> {err}");
+        }
+    }
+
+    #[test]
+    fn finalize_rejects_multi_line_replies() {
+        let err = finalize_llm_reply("cd /tmp\nls").unwrap_err();
+        assert!(err.contains("2 lines"), "{err}");
+    }
 
     #[test]
     fn require_single_line_accepts_one_line() {

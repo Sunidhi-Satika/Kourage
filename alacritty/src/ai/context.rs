@@ -13,6 +13,20 @@ use alacritty_terminal::term::Term;
 
 use crate::daemon::foreground_process_path;
 
+/// Few-shot examples included in every prompt: (instruction, command).
+pub(crate) const PROMPT_EXAMPLES: [(&str, &str); 10] = [
+    ("list all files including hidden ones, newest first", "ls -lat"),
+    ("list only the hidden files, sorted by modification time", "ls -ldt .[!.]*"),
+    ("show disk usage of each folder here, biggest last", "du -sh */ | sort -h"),
+    ("find all files larger than 100MB", "find . -type f -size +100M"),
+    ("count lines of code in all rust files", "find . -name '*.rs' -print0 | xargs -0 wc -l"),
+    ("what is using port 8080", "ss -ltnp | grep :8080"),
+    ("show the last 20 commits briefly", "git log --oneline -20"),
+    ("show free disk space", "df -h"),
+    ("search for TODO in all files", "grep -rn TODO ."),
+    ("show the 10 processes using the most memory", "ps aux --sort=-%mem | head -11"),
+];
+
 /// Rich environmental context gathered from the active terminal window.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AiContext {
@@ -211,6 +225,8 @@ impl AiContext {
     }
 
     /// Format the system prompt embedding all rich context.
+    ///
+    /// Few-shot examples steer small models away from plausible-looking but wrong commands.
     pub fn format_prompt(&self, instruction: &str) -> String {
         let mut prompt = String::from(
             "You are Kourage, an intelligent terminal assistant. Convert the user's natural language instruction into a single, valid, raw shell command for the current environment.\n\n"
@@ -244,6 +260,11 @@ impl AiContext {
                 prompt.push_str(recent_buffer);
                 prompt.push_str("\n```\n");
             }
+        }
+
+        prompt.push_str("\n### Examples (GNU/Linux; adapt to the environment above):\n");
+        for (request, command) in PROMPT_EXAMPLES {
+            prompt.push_str(&format!("Instruction: \"{request}\"\nCommand: {command}\n"));
         }
 
         prompt.push_str(&format!(
@@ -296,5 +317,24 @@ mod tests {
         assert!(formatted.contains("Ubuntu 24.04 (Linux)"));
         assert!(formatted.contains("error: test failed"));
         assert!(formatted.contains("\"run the tests\""));
+    }
+
+    #[test]
+    fn prompt_has_examples_before_the_instruction() {
+        let prompt = AiContext::default().format_prompt("do the thing");
+        let examples = prompt.find("### Examples").expect("examples section");
+        let instruction = prompt.find("### User Instruction").expect("instruction section");
+        assert!(examples < instruction);
+        assert!(prompt.contains("df -h"));
+    }
+
+    #[test]
+    fn every_example_is_a_safe_single_line_command() {
+        for (request, command) in PROMPT_EXAMPLES {
+            assert!(!request.is_empty());
+            assert_eq!(crate::ai::require_single_line(command).unwrap(), *command);
+            assert!(!command.contains('`'), "backticks in example: {command}");
+            assert!(!crate::ai::is_destructive_command(command), "unsafe example: {command}");
+        }
     }
 }
