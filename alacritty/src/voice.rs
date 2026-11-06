@@ -294,16 +294,7 @@ fn call_llm(
             anyhow::anyhow!("Failed to parse response from {}: {}", voice_config.llm_api_url, e)
         })?;
 
-    let mut cmd = res.response.trim().to_string();
-    if cmd.starts_with("```") {
-        if let Some(first_newline) = cmd.find('\n') {
-            cmd = cmd[first_newline + 1..].to_string();
-        }
-        if let Some(last_ticks) = cmd.rfind("```") {
-            cmd = cmd[..last_ticks].to_string();
-        }
-        cmd = cmd.trim().to_string();
-    }
+    let cmd = crate::ai::clean_llm_reply(&res.response);
 
     if cmd.is_empty() {
         return Err(anyhow::anyhow!("LLM returned an empty command"));
