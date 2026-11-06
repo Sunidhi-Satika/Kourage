@@ -6,8 +6,9 @@ Order: A (safety and output), B (first run), C (voice and input), D (quality). E
 
 **1. Safety guard is a keyword list**
 - Replace substring matching with a tokenizer: split on `;`, `&&`, `||`, `|`, newline, `$(...)` and backticks. Take the command word of each segment, skipping wrappers (`sudo`, `env`, `command`, `xargs`, `nohup`, `time`).
-- Classify per command word plus its flags, parsed as flags rather than substrings. `rm` is dangerous only with `-r`/`-R`/`-f`, or a glob, or a system path. This fixes the `rm my-report.txt` false positive and the dead `-R` checks, since matching stops lowercasing the whole line.
-- Add rules: `sudo` anything, `curl|wget … | sh`, `find … -delete` and `-exec rm`, `>` truncation of an existing file, `chmod/chown -R` on `/` or `~`, `kill -9 -1`, `mv`/`cp` onto system paths.
+- Classify per command word plus its flags, parsed as flags rather than substrings. `rm` is dangerous with `-r`/`-R`/`--recursive`, a broad target (`*`, `/`, `~`, `dir/*`), or a system path or home dotfile. Plain `rm -f file` is deliberately safe. This fixes the `rm my-report.txt` false positive and the dead `-R` checks, since matching stops lowercasing the whole line.
+- Substitutions (`$(...)`, backticks, `<(...)`) are analysed as their own commands and leave a placeholder in the surrounding command; an unknown command name (`$(which rm) -rf ~`) is flagged. A shell, `eval` or `source` fed by a download (`sh -c "$(curl …)"`, `bash <(curl …)`) is flagged.
+- Add rules: `sudo` anything, `curl|wget … | sh`, `find … -delete` and `-exec rm`, `>` truncation of home dotfiles and system paths (truncating arbitrary user files is not flagged, since the guard can't see the filesystem), `chmod/chown -R` on `/` or `~`, `kill -9 -1`, `mv`/`cp` onto system paths.
 - Three levels (safe, warn, blocked) instead of a boolean.
 - A table-driven test file of about 100 dangerous and safe commands is the spec. Every future bug adds a row.
 - Stage 2 later swaps the tokenizer for a real shell AST (`tree-sitter-bash`).

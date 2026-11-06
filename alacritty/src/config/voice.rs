@@ -22,6 +22,27 @@ impl Default for Voice {
     }
 }
 
+/// Fold the legacy `[voice]` section into `[ai]` before deserializing. Returns a warning to log
+/// when the legacy section was present.
+pub fn normalize_legacy_section(config: &mut toml::Value) -> Option<String> {
+    let table = config.as_table_mut()?;
+    let legacy = table.remove("voice")?;
+
+    let (merged, warning) = match table.remove("ai") {
+        Some(ai) => (
+            crate::config::serde_utils::merge(legacy, ai),
+            "Config has both [ai] and the old [voice] section; merged them, with [ai] taking \
+             precedence. Move your settings to [ai] and remove [voice].",
+        ),
+        None => (
+            legacy,
+            "The [voice] config section is deprecated; rename it to [ai].",
+        ),
+    };
+    table.insert("ai".to_string(), merged);
+    Some(warning.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +94,34 @@ mod tests {
     fn legacy_voice_section_still_works() {
         let config = ui_config_from("[voice]\nmodel = \"old:1b\"\n");
         assert_eq!(config.ai.model, "old:1b");
+    }
+
+    fn table(toml_str: &str) -> toml::Value {
+        toml::Value::Table(toml::from_str::<Table>(toml_str).unwrap())
+    }
+
+    #[test]
+    fn legacy_only_section_is_renamed_with_a_warning() {
+        let mut config = table("[voice]\nmodel = \"old:1b\"\n");
+        let warning = normalize_legacy_section(&mut config).expect("warning");
+        assert!(warning.contains("[voice]") && warning.contains("[ai]"), "{warning}");
+        assert_eq!(config, table("[ai]\nmodel = \"old:1b\"\n"));
+    }
+
+    #[test]
+    fn when_both_sections_exist_ai_wins_and_voice_fills_gaps() {
+        let mut config = table(
+            "[voice]\nmodel = \"old\"\ntimeout_secs = 5\n[ai]\nmodel = \"new\"\n",
+        );
+        let warning = normalize_legacy_section(&mut config).expect("warning");
+        assert!(warning.contains("both"), "{warning}");
+        assert_eq!(config, table("[ai]\nmodel = \"new\"\ntimeout_secs = 5\n"));
+    }
+
+    #[test]
+    fn config_without_legacy_section_is_untouched() {
+        let mut config = table("[ai]\nmodel = \"x\"\n");
+        assert_eq!(normalize_legacy_section(&mut config), None);
+        assert_eq!(config, table("[ai]\nmodel = \"x\"\n"));
     }
 }

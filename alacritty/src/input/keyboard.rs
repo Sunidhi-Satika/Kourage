@@ -55,13 +55,13 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         // Reset search delay when the user is still typing.
         self.reset_search_delay();
 
-        // Key bindings suppress the character input.
-        if self.process_key_bindings(&key) {
+        // Esc cancels a voice recording in progress instead of reaching the shell.
+        if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_recording() {
             return;
         }
 
-        // Esc cancels a voice recording in progress instead of reaching the shell.
-        if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_recording() {
+        // Key bindings suppress the character input.
+        if self.process_key_bindings(&key) {
             return;
         }
 

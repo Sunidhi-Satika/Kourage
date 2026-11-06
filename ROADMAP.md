@@ -49,7 +49,7 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 - LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up. **Fixed:** the section is now `[ai]`, with `[voice]` still accepted as an alias (tested). No deprecation warning is logged yet.
 
 **Safety guard holes:**
-- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`ai/safety.rs`, table-tested).
+- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`ai/safety.rs`, table-tested). Known gaps: `$'…'` quoting, `x=rm; $x -rf ~`, heredocs, and quote-naive raw SQL patterns (`drop table` inside a grep or commit message is flagged).
 - It has false positives: any `-r` substring in an `rm` line (e.g. `rm my-report.txt`). **Fixed:** `rm` is judged by parsed flags, so `rm my-report.txt` is safe.
 - After `to_lowercase()`, the `-R` checks are dead code. **Fixed:** flag checks are case-sensitive now.
 - Needs a table-driven test of dangerous vs safe commands (the roadmap already plans this for Stage 1; it should exist now). **Fixed:** `test_dangerous_command_table` covers about 70 commands.
