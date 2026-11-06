@@ -1,8 +1,25 @@
 //! Safety analyzer for AI-generated commands.
 
+/// Whether any command in a chain would end the user's shell session.
+fn ends_session(cmd: &str) -> bool {
+    cmd.split(|c| matches!(c, ';' | '&' | '|' | '\n')).any(|segment| {
+        let mut words = segment.split_whitespace();
+        match words.next() {
+            Some("exit" | "logout" | "exec") => true,
+            Some("kill") => words.any(|w| w == "$$"),
+            _ => false,
+        }
+    })
+}
+
 /// Check whether a shell command is potentially destructive or dangerous.
 pub fn is_destructive_command(raw_cmd: &str) -> bool {
     let cmd = raw_cmd.trim().to_lowercase();
+
+    // Commands that end the terminal session itself
+    if ends_session(&cmd) {
+        return true;
+    }
 
     // Dangerous removal patterns
     if cmd.starts_with("rm ") || cmd.contains(" rm ") {
@@ -108,5 +125,23 @@ mod tests {
         assert!(is_destructive_command("reboot"));
         assert!(!is_destructive_command("ls -la"));
         assert!(!is_destructive_command("cargo build --release"));
+    }
+
+    #[test]
+    fn test_session_ending_commands() {
+        let flagged = [
+            "exit", "exit 0", "logout", "kill $$", "kill -9 $$", "exec bash", "ls; exit",
+            "true && exit", "false || exit 1", "echo hi\nexit", "EXIT",
+        ];
+        for cmd in flagged {
+            assert!(is_destructive_command(cmd), "should flag: {cmd:?}");
+        }
+        let safe = [
+            "echo exit", "./exit_code.sh", "cat exit.txt", "grep exit log.txt",
+            "ls executable", "kill 1234",
+        ];
+        for cmd in safe {
+            assert!(!is_destructive_command(cmd), "should be safe: {cmd:?}");
+        }
     }
 }
