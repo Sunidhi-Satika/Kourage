@@ -297,10 +297,11 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         };
 
         // Trigger matching key bindings.
-        let ai_overlay_active = self.ctx.ai_prompt_active() || self.ctx.ai_preview_active();
+        let ai_prompt_active = self.ctx.ai_prompt_active();
+        let ai_overlay_active = ai_prompt_active || self.ctx.ai_preview_active();
         for i in 0..self.ctx.config().key_bindings().len() {
             let binding = &self.ctx.config().key_bindings()[i];
-            if ai_overlay_active && !binding_allowed_in_ai_overlay(&binding.action) {
+            if ai_overlay_active && !binding_allowed_in_ai_overlay(&binding.action, ai_prompt_active) {
                 continue;
             }
             if let Some(action) = binding_action(binding) {
@@ -373,8 +374,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 ///
 /// Bindings run before the overlay sees the key, so without this filter default bindings
 /// such as Backspace (`\x7f` to the PTY) would bypass the prompt and reach the shell.
-fn binding_allowed_in_ai_overlay(action: &Action) -> bool {
+fn binding_allowed_in_ai_overlay(action: &Action, prompt_active: bool) -> bool {
     matches!(action, Action::ToggleAiPrompt)
+        || (prompt_active && matches!(action, Action::Paste | Action::PasteSelection))
 }
 
 fn build_sequence(key: KeyEvent, mods: ModifiersState, mode: TermMode) -> Vec<u8> {
@@ -810,18 +812,27 @@ mod tests {
     fn ai_overlay_blocks_backspace_binding() {
         // The default Backspace binding writes DEL straight to the PTY; while the AI
         // prompt is open that must not happen, the prompt handles Backspace itself.
-        assert!(!binding_allowed_in_ai_overlay(&Action::Esc("\x7f".into())));
+        assert!(!binding_allowed_in_ai_overlay(&Action::Esc("\x7f".into()), true));
     }
 
     #[test]
     fn ai_overlay_blocks_terminal_actions() {
-        assert!(!binding_allowed_in_ai_overlay(&Action::Paste));
-        assert!(!binding_allowed_in_ai_overlay(&Action::VoiceCommand));
-        assert!(!binding_allowed_in_ai_overlay(&Action::ToggleViMode));
+        for prompt_active in [true, false] {
+            assert!(!binding_allowed_in_ai_overlay(&Action::VoiceCommand, prompt_active));
+            assert!(!binding_allowed_in_ai_overlay(&Action::ToggleViMode, prompt_active));
+        }
     }
 
     #[test]
     fn ai_overlay_allows_closing_the_prompt() {
-        assert!(binding_allowed_in_ai_overlay(&Action::ToggleAiPrompt));
+        assert!(binding_allowed_in_ai_overlay(&Action::ToggleAiPrompt, false));
+    }
+
+    #[test]
+    fn ai_prompt_allows_paste_but_preview_does_not() {
+        assert!(binding_allowed_in_ai_overlay(&Action::Paste, true));
+        assert!(binding_allowed_in_ai_overlay(&Action::PasteSelection, true));
+        assert!(!binding_allowed_in_ai_overlay(&Action::Paste, false));
+        assert!(!binding_allowed_in_ai_overlay(&Action::PasteSelection, false));
     }
 }

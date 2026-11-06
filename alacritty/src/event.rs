@@ -88,6 +88,12 @@ pub struct AiPromptState {
     pub history_index: Option<usize>,
 }
 
+/// Make pasted text safe for the single-line prompt: line breaks and tabs become spaces, and
+/// trailing newlines (common when copying a line) are dropped, so a paste can never submit.
+fn sanitize_prompt_paste(text: &str) -> String {
+    text.trim_end_matches(['\n', '\r']).replace("\r\n", " ").replace(['\n', '\r', '\t'], " ")
+}
+
 impl AiPromptState {
     #[inline]
     pub fn is_active(&self) -> bool {
@@ -1664,7 +1670,11 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
 
     /// Paste a text into the terminal.
     fn paste(&mut self, text: &str, bracketed: bool) {
-        if self.search_active() {
+        if self.ai_prompt_state.is_active() {
+            for c in sanitize_prompt_paste(text).chars() {
+                self.ai_prompt_input(c);
+            }
+        } else if self.search_active() {
             for c in text.chars() {
                 self.search_input(c);
             }
@@ -2504,5 +2514,17 @@ mod tests {
         assert_eq!(preview.command(), None);
         assert!(!preview.is_destructive);
     }
-}
 
+    #[test]
+    fn prompt_paste_turns_line_breaks_into_spaces() {
+        assert_eq!(sanitize_prompt_paste("list\nfiles"), "list files");
+        assert_eq!(sanitize_prompt_paste("a\r\nb"), "a b");
+        assert_eq!(sanitize_prompt_paste("a\tb"), "a b");
+    }
+
+    #[test]
+    fn prompt_paste_drops_trailing_newlines() {
+        assert_eq!(sanitize_prompt_paste("echo hi\n"), "echo hi");
+        assert_eq!(sanitize_prompt_paste("echo hi\r\n\r\n"), "echo hi");
+    }
+}
