@@ -149,6 +149,39 @@ struct Recording {
     sample_rate: u32,
 }
 
+/// Convert device samples of any supported format to `f32` in `[-1.0, 1.0]`, replacing `out`.
+fn convert_to_f32<T>(data: &[T], out: &mut Vec<f32>)
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    out.clear();
+    out.extend(data.iter().map(|sample| <f32 as cpal::FromSample<T>>::from_sample_(*sample)));
+}
+
+/// Open an input stream for sample type `T`, handing every chunk to `on_chunk` as `f32`.
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut on_chunk: impl FnMut(&[f32]) + Send + 'static,
+) -> Result<cpal::Stream, anyhow::Error>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let mut converted = Vec::<f32>::new();
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            convert_to_f32(data, &mut converted);
+            on_chunk(&converted);
+        },
+        |err| error!("An error occurred on the input stream: {}", err),
+        None,
+    )?;
+    Ok(stream)
+}
+
 fn record_audio() -> Result<Recording, anyhow::Error> {
     let host = cpal::default_host();
     let device = host
@@ -165,26 +198,32 @@ fn record_audio() -> Result<Recording, anyhow::Error> {
     let should_stop_clone = should_stop.clone();
     let mut detector = SilenceDetector::new();
 
-    let stream = device.build_input_stream(
-        &config.into(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            if data.is_empty() {
-                return;
-            }
-            samples_clone.lock().unwrap().extend_from_slice(data);
+    let on_chunk = move |data: &[f32]| {
+        if data.is_empty() {
+            return;
+        }
+        samples_clone.lock().unwrap().extend_from_slice(data);
 
-            let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
-            let frames = data.len() / usize::from(channels.max(1));
-            let chunk = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate));
-            if detector.push(rms, chunk) {
-                should_stop_clone.store(true, Ordering::SeqCst);
-            }
+        let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
+        let frames = data.len() / usize::from(channels.max(1));
+        let chunk = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate));
+        if detector.push(rms, chunk) {
+            should_stop_clone.store(true, Ordering::SeqCst);
+        }
+    };
+
+    let stream_config: cpal::StreamConfig = config.clone().into();
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, on_chunk)?,
+        cpal::SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, on_chunk)?,
+        cpal::SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, on_chunk)?,
+        cpal::SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, on_chunk)?,
+        other => {
+            return Err(anyhow::anyhow!(
+                "Unsupported microphone sample format {other:?}; please report your device."
+            ))
         },
-        |err| {
-            error!("An error occurred on the input stream: {}", err);
-        },
-        None,
-    )?;
+    };
 
     stream.play()?;
     info!("Recording audio... Speak now!");
@@ -204,6 +243,26 @@ fn record_audio() -> Result<Recording, anyhow::Error> {
     Ok(Recording { samples, channels, sample_rate })
 }
 
+/// The loaded Whisper model, kept between commands because loading it from disk is slow.
+static WHISPER_CONTEXT: Mutex<Option<(String, Arc<WhisperContext>)>> = Mutex::new(None);
+
+fn whisper_context(model_path: &str) -> Result<Arc<WhisperContext>, anyhow::Error> {
+    let mut cached = WHISPER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, ctx)) = cached.as_ref() {
+        if path == model_path {
+            return Ok(ctx.clone());
+        }
+    }
+
+    info!("Loading Whisper model from {}", model_path);
+    let ctx = Arc::new(
+        WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+            .map_err(|e| anyhow::anyhow!("Failed to create Whisper context: {:?}", e))?,
+    );
+    *cached = Some((model_path.to_string(), ctx.clone()));
+    Ok(ctx)
+}
+
 fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<String, anyhow::Error> {
     let resolved_model_path = resolve_path(model_path_str);
     if !resolved_model_path.exists() {
@@ -216,8 +275,7 @@ fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<Strin
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid model path encoding"))?;
 
-    let ctx = WhisperContext::new_with_params(model_path_os, WhisperContextParameters::default())
-        .map_err(|e| anyhow::anyhow!("Failed to create Whisper context: {:?}", e))?;
+    let ctx = whisper_context(model_path_os)?;
     let mut state = ctx
         .create_state()
         .map_err(|e| anyhow::anyhow!("Failed to create Whisper state: {:?}", e))?;
@@ -659,5 +717,23 @@ mod tests {
         assert!((json["repeat_penalty"].as_f64().unwrap() - 1.1).abs() < 1e-6);
         assert_eq!(json["stop"], serde_json::json!(["\n\n"]));
         assert_eq!(json["temperature"], 0.0);
+    }
+
+    #[test]
+    fn samples_convert_to_f32_from_i16_and_u16() {
+        let mut out = Vec::new();
+        convert_to_f32(&[i16::MIN, 0, i16::MAX], &mut out);
+        assert!((out[0] + 1.0).abs() < 1e-3 && out[1].abs() < 1e-6 && (out[2] - 1.0).abs() < 1e-3);
+
+        // Unsigned 16-bit audio is centred on 32768.
+        convert_to_f32(&[0u16, 32768, 65535], &mut out);
+        assert!((out[0] + 1.0).abs() < 1e-3 && out[1].abs() < 1e-3 && (out[2] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn convert_to_f32_replaces_previous_contents() {
+        let mut out = vec![9.0; 5];
+        convert_to_f32(&[0.5f32], &mut out);
+        assert_eq!(out, vec![0.5]);
     }
 }
