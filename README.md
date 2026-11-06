@@ -170,7 +170,8 @@ Run `./target/debug/alacritty -v` to see log output. Kourage's own messages tell
 | `The model returned N lines but a single command is required` | The model ignored the one-line rule. Rephrase the request. |
 | `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[ai] whisper_model_path`. |
 | `No audio input device found` / ALSA errors | No microphone is visible. On WSL2, install `alsa-utils pulseaudio-utils libasound2-plugins` and check `pactl list short sources`. |
-| Voice transcribes "Bye." or nothing | The recording probably stopped before you spoke. Run with `-vv`, then listen to `/tmp/kourage-voice-<pid>-<time>.wav` and report what you hear. |
+| `No speech heard (loudest input level …)` | The microphone did not pick you up. Watch the `#` meter while the status says LISTENING: if it stays empty, speak closer or check the input device (`pactl list short sources`). To hear what was recorded, run with `-vv` and play `/tmp/kourage-voice-<pid>-<time>.wav`. |
+| `Heard sound but no words were recognised` | Whisper could not make out words (noise, or speech too short). Try again; a larger Whisper model such as `ggml-small.en.bin` is more accurate. |
 
 Commands that look destructive (recursive `rm`, `sudo`, `curl | sh`, `git reset --hard`, anything that ends your shell, and more) are flagged in the preview. Read the preview before pressing Enter; the guard is a safety net, not a guarantee.
 
