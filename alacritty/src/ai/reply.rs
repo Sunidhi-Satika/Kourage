@@ -23,9 +23,43 @@ pub fn clean_llm_reply(raw: &str) -> String {
     text.to_string()
 }
 
+/// Require a reply to be exactly one line, so one confirm never runs several commands.
+pub fn require_single_line(cmd: &str) -> Result<String, String> {
+    let lines: Vec<&str> = cmd.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    match lines.as_slice() {
+        [only] => Ok((*only).to_string()),
+        [] => Ok(String::new()),
+        many => Err(format!(
+            "The model returned {} lines but a single command is required. Try rephrasing.",
+            many.len()
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn require_single_line_accepts_one_line() {
+        assert_eq!(require_single_line("ls -la").unwrap(), "ls -la");
+    }
+
+    #[test]
+    fn require_single_line_rejects_several_lines() {
+        let err = require_single_line("cd /tmp\nrm -rf *").unwrap_err();
+        assert!(err.contains("2 lines"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn require_single_line_ignores_blank_lines_around_one_command() {
+        assert_eq!(require_single_line("\n\nls\n\n").unwrap(), "ls");
+    }
+
+    #[test]
+    fn require_single_line_rejects_backslash_continuation() {
+        assert!(require_single_line("ls \\\n  -la").is_err());
+    }
 
     #[test]
     fn clean_llm_reply_table() {

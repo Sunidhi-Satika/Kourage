@@ -40,19 +40,19 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 - [ ] Voice has no default binding on macOS (it lives in `common_keybindings`, which excludes macOS).
 
 **LLM client robustness:**
-- No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`.
-- The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test.
+- No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`. **Fixed:** requests now send `num_predict: 128`, `repeat_penalty: 1.1` and a `\n\n` stop (`LlmOptions::for_command`, tested).
+- The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test. **Fixed:** `clean_llm_reply` strips fences and backticks (tested).
 - Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt.
 - If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`").
-- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview.
+- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Showing multi-line replies in the preview is still open.
 - An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar. The blocking 15 s timeout fits small models only.
 - LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up.
 
 **Safety guard holes:**
-- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains.
-- It has false positives: any `-r` substring in an `rm` line (e.g. `rm my-report.txt`).
-- After `to_lowercase()`, the `-R` checks are dead code.
-- Needs a table-driven test of dangerous vs safe commands (the roadmap already plans this for Stage 1; it should exist now).
+- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`ai/safety.rs`, table-tested).
+- It has false positives: any `-r` substring in an `rm` line (e.g. `rm my-report.txt`). **Fixed:** `rm` is judged by parsed flags, so `rm my-report.txt` is safe.
+- After `to_lowercase()`, the `-R` checks are dead code. **Fixed:** flag checks are case-sensitive now.
+- Needs a table-driven test of dangerous vs safe commands (the roadmap already plans this for Stage 1; it should exist now). **Fixed:** `test_dangerous_command_table` covers about 70 commands.
 
 **Testing and quality:**
 - No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines.

@@ -294,6 +294,17 @@ fn write_debug_wav(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
 #[derive(Serialize)]
 struct LlmOptions {
     temperature: f32,
+    /// Hard cap on generated tokens; a command never needs more.
+    num_predict: u32,
+    /// Discourages the repetition loops small models fall into.
+    repeat_penalty: f32,
+    stop: Vec<&'static str>,
+}
+
+impl LlmOptions {
+    fn for_command(temperature: f32) -> Self {
+        Self { temperature, num_predict: 128, repeat_penalty: 1.1, stop: vec!["\n\n"] }
+    }
 }
 
 #[derive(Serialize)]
@@ -327,7 +338,7 @@ fn call_llm(
         model: voice_config.model.clone(),
         prompt,
         stream: false,
-        options: Some(LlmOptions { temperature: voice_config.temperature }),
+        options: Some(LlmOptions::for_command(voice_config.temperature)),
     };
 
     let res = client
@@ -342,7 +353,8 @@ fn call_llm(
             anyhow::anyhow!("Failed to parse response from {}: {}", voice_config.llm_api_url, e)
         })?;
 
-    let cmd = crate::ai::clean_llm_reply(&res.response);
+    let cmd = crate::ai::require_single_line(&crate::ai::clean_llm_reply(&res.response))
+        .map_err(|msg| anyhow::anyhow!(msg))?;
 
     if cmd.is_empty() {
         return Err(anyhow::anyhow!("LLM returned an empty command"));
@@ -616,5 +628,14 @@ mod tests {
         }
         assert!(write_debug_wav(&path, b"xyz").is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn llm_request_options_cap_length_and_repetition() {
+        let json = serde_json::to_value(LlmOptions::for_command(0.0)).unwrap();
+        assert_eq!(json["num_predict"], 128);
+        assert!((json["repeat_penalty"].as_f64().unwrap() - 1.1).abs() < 1e-6);
+        assert_eq!(json["stop"], serde_json::json!(["\n\n"]));
+        assert_eq!(json["temperature"], 0.0);
     }
 }
