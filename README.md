@@ -138,6 +138,24 @@ cargo run --release --bin alacritty
 
 ---
 
+## 🩺 Troubleshooting
+
+Run `./target/debug/alacritty -v` to see log output. Kourage's own messages tell you what to fix; the usual ones:
+
+| Message | Cause and fix |
+| :--- | :--- |
+| `Can't reach the AI server at …` | Ollama isn't running. Start it with `ollama serve` (install it inside WSL if you use WSL, not on Windows). Check with `curl localhost:11434/api/tags`. |
+| `The model "…" isn't installed` | Run `ollama pull qwen2.5-coder:3b` (or the model named in `[voice] model`). |
+| `The AI server … did not answer within …s` | The model is still loading, or the machine is slow. Try again, or raise `[voice] timeout_secs`. |
+| `The model returned N lines but a single command is required` | The model ignored the one-line rule. Rephrase the request. |
+| `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[voice] whisper_model_path`. |
+| `No audio input device found` / ALSA errors | No microphone is visible. On WSL2, install `alsa-utils pulseaudio-utils libasound2-plugins` and check `pactl list short sources`. |
+| Voice transcribes "Bye." or nothing | The recording probably stopped before you spoke. Run with `-vv`, then listen to `/tmp/kourage-voice-<pid>-<time>.wav` and report what you hear. |
+
+Commands that look destructive (recursive `rm`, `sudo`, `curl | sh`, `git reset --hard`, anything that ends your shell, and more) are flagged in the preview. Read the preview before pressing Enter; the guard is a safety net, not a guarantee.
+
+---
+
 ## 🗺️ Roadmap & In-Development Features
 
 - [x] **Interactive Preview & Safety Guard**: Full interactive preview bar for all AI commands (`Enter` to run, `Tab` to edit arguments, `Esc` to cancel) with intelligent danger analysis (red ⚠️ warnings for `rm -rf`, `mkfs`, `dd`, `git reset --hard`, `git push --force`, etc.).

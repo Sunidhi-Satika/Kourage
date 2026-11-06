@@ -207,10 +207,9 @@ fn record_audio() -> Result<Recording, anyhow::Error> {
 fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<String, anyhow::Error> {
     let resolved_model_path = resolve_path(model_path_str);
     if !resolved_model_path.exists() {
-        return Err(anyhow::anyhow!(
-            "Whisper model not found at path: \"{}\" (check [voice.whisper_model_path] in alacritty.toml)",
-            resolved_model_path.display()
-        ));
+        return Err(anyhow::anyhow!(diagnostics::whisper_missing_message(
+            &resolved_model_path.display().to_string()
+        )));
     }
 
     let model_path_os = resolved_model_path
@@ -321,7 +320,7 @@ struct LlmResponse {
     response: String,
 }
 
-use crate::ai::AiContext;
+use crate::ai::{diagnostics, AiContext};
 
 fn call_llm(
     instruction: &str,
@@ -341,17 +340,40 @@ fn call_llm(
         options: Some(LlmOptions::for_command(voice_config.temperature)),
     };
 
-    let res = client
-        .post(&voice_config.llm_api_url)
-        .json(&request)
-        .send()
-        .map_err(|e| {
-            anyhow::anyhow!("HTTP request to \"{}\" failed: {}", voice_config.llm_api_url, e)
-        })?
+    let url = &voice_config.llm_api_url;
+    let response = client.post(url).json(&request).send().map_err(|e| {
+        if e.is_timeout() {
+            anyhow::anyhow!(
+                "The AI server at {url} did not answer within {}s (the model may still be \
+                 loading; try again).",
+                voice_config.timeout_secs
+            )
+        } else {
+            anyhow::anyhow!(diagnostics::llm_failure_message(
+                url,
+                &voice_config.model,
+                None,
+                &e.to_string(),
+                e.is_connect()
+            ))
+        }
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow::anyhow!(diagnostics::llm_failure_message(
+            url,
+            &voice_config.model,
+            Some(status.as_u16()),
+            &body,
+            false
+        )));
+    }
+
+    let res = response
         .json::<LlmResponse>()
-        .map_err(|e| {
-            anyhow::anyhow!("Failed to parse response from {}: {}", voice_config.llm_api_url, e)
-        })?;
+        .map_err(|e| anyhow::anyhow!("Unexpected response from {url}: {e}"))?;
 
     let cmd = crate::ai::require_single_line(&crate::ai::clean_llm_reply(&res.response))
         .map_err(|msg| anyhow::anyhow!(msg))?;

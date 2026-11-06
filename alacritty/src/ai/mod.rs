@@ -1,6 +1,7 @@
 //! AI modules for Kourage terminal.
 
 pub mod context;
+pub mod diagnostics;
 pub mod reply;
 pub mod safety;
 
