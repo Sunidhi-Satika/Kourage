@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -15,9 +15,7 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 use crate::config::ui_config::UiConfig;
 use crate::config::voice::Voice;
 use crate::event::{Event, EventType};
-use crate::message_bar::{Message, MessageType};
 
-pub const LOG_TARGET_VOICE: &str = "alacritty_voice";
 
 /// Held while a voice session runs; a second session is refused until it is dropped.
 struct BusyGuard(&'static AtomicBool);
@@ -190,26 +188,68 @@ fn loudest_window_rms(samples: &[f32], channels: u16, sample_rate: u32) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// Live microphone level for the status bar's meter: jumps up with the signal and falls away
+/// smoothly, so the meter is readable at the status bar's refresh rate.
+fn smooth_level(previous: f32, rms: f32) -> f32 {
+    rms.max(previous * 0.85)
+}
+
+/// The most recent (smoothed) microphone level, as `f32` bits.
+static INPUT_LEVEL_BITS: AtomicU32 = AtomicU32::new(0);
+
+/// Current microphone level for the status bar's meter; 0 when not recording.
+pub fn input_level() -> f32 {
+    f32::from_bits(INPUT_LEVEL_BITS.load(Ordering::Relaxed))
+}
+
+fn set_input_level(level: f32) {
+    INPUT_LEVEL_BITS.store(level.to_bits(), Ordering::Relaxed);
+}
+
 pub fn init() {
     // Initialization logic if needed
 }
 
-fn send_status(
-    proxy: &EventLoopProxy<Event>,
+/// Sends the AI's progress to the window and keeps the elapsed-seconds counter moving.
+struct StatusReporter {
+    proxy: EventLoopProxy<Event>,
     window_id: WindowId,
-    text: impl Into<String>,
-    ty: MessageType,
-) {
-    let mut message = Message::new(text.into(), ty);
-    message.set_target(LOG_TARGET_VOICE.to_string());
-    let _ = proxy.send_event(Event::new(EventType::Message(message), window_id));
+    ticking: Arc<AtomicBool>,
 }
 
-fn clear_status(proxy: &EventLoopProxy<Event>, window_id: WindowId) {
-    let _ = proxy.send_event(Event::new(
-        EventType::ClearMessageTarget(LOG_TARGET_VOICE.to_string()),
-        window_id,
-    ));
+impl StatusReporter {
+    fn start(proxy: &EventLoopProxy<Event>, window_id: WindowId) -> Self {
+        let ticking = Arc::new(AtomicBool::new(true));
+        let (ticker_proxy, ticker_flag) = (proxy.clone(), ticking.clone());
+        thread::spawn(move || {
+            while ticker_flag.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(250));
+                let _ = ticker_proxy.send_event(Event::new(EventType::AiStatusTick, window_id));
+            }
+        });
+        Self { proxy: proxy.clone(), window_id, ticking }
+    }
+
+    fn show(&self, phase: AiPhase) {
+        let event = EventType::AiStatus(Some(AiStatus::new(phase)));
+        let _ = self.proxy.send_event(Event::new(event, self.window_id));
+    }
+
+    fn clear(&self) {
+        let _ = self.proxy.send_event(Event::new(EventType::AiStatus(None), self.window_id));
+    }
+
+    /// Show an error that stays until the user presses a key.
+    fn fail(&self, message: String) {
+        error!("{message}");
+        self.show(AiPhase::Error(message));
+    }
+}
+
+impl Drop for StatusReporter {
+    fn drop(&mut self) {
+        self.ticking.store(false, Ordering::Relaxed);
+    }
 }
 
 fn resolve_path(path_str: &str) -> PathBuf {
@@ -268,6 +308,13 @@ fn record_audio() -> Result<Option<Recording>, anyhow::Error> {
         .default_input_device()
         .ok_or_else(|| anyhow::anyhow!("No audio input device found"))?;
     let config = device.default_input_config()?;
+    info!(
+        "Microphone: {} ({} Hz, {} ch, {:?})",
+        device.name().unwrap_or_else(|_| "unknown".into()),
+        config.sample_rate().0,
+        config.channels(),
+        config.sample_format()
+    );
     let channels = config.channels();
     let sample_rate = config.sample_rate().0;
 
@@ -285,6 +332,7 @@ fn record_audio() -> Result<Option<Recording>, anyhow::Error> {
         samples_clone.lock().unwrap().extend_from_slice(data);
 
         let rms = (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt();
+        set_input_level(smooth_level(input_level(), rms));
         let frames = data.len() / usize::from(channels.max(1));
         let chunk = Duration::from_secs_f64(frames as f64 / f64::from(sample_rate));
         if detector.push(rms, chunk) {
@@ -320,6 +368,7 @@ fn record_audio() -> Result<Option<Recording>, anyhow::Error> {
 
     stream.pause()?;
     drop(stream);
+    set_input_level(0.0);
     info!("Recording stopped.");
 
     if VOICE_SESSION.is_cancelled() {
@@ -470,7 +519,7 @@ struct LlmResponse {
     response: String,
 }
 
-use crate::ai::{diagnostics, AiContext};
+use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
 
 fn call_llm(
     instruction: &str,
@@ -541,19 +590,14 @@ pub fn handle_voice_command(
     };
 
     let voice_config = config.ai.clone();
+    let reporter = StatusReporter::start(proxy, window_id);
     let proxy = proxy.clone();
 
     thread::spawn(move || {
         let _busy = busy;
 
         // Stage 1: Audio recording
-        send_status(
-            &proxy,
-            window_id,
-            "🎙️ Recording audio... Speak your command",
-            MessageType::Warning,
-        );
-
+        reporter.show(AiPhase::Listening);
         VOICE_SESSION.begin_recording();
         let recorded = record_audio();
         VOICE_SESSION.end_recording();
@@ -562,78 +606,58 @@ pub fn handle_voice_command(
             Ok(Some(recording)) => recording,
             Ok(None) => {
                 info!("Voice command cancelled");
-                send_status(&proxy, window_id, "Voice command cancelled", MessageType::Warning);
+                reporter.show(AiPhase::Notice("Recording cancelled.".into()));
                 return;
             },
             Err(e) => {
-                let err_msg = format!("Audio recording failed: {e}");
-                error!("{err_msg}");
-                send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
+                reporter.fail(format!("Audio recording failed: {e}"));
                 return;
             },
         };
 
         // Stage 2: Speech transcription
-        send_status(
-            &proxy,
-            window_id,
-            "⚙️ Transcribing speech with Whisper...",
-            MessageType::Warning,
-        );
+        reporter.show(AiPhase::Transcribing);
+        let loudest =
+            loudest_window_rms(&recording.samples, recording.channels, recording.sample_rate);
 
         let transcribed_text = match transcribe_audio(&recording, &voice_config.whisper_model_path)
         {
             Ok(text) => clean_transcript(&text),
             Err(e) => {
-                let err_msg = format!("Whisper transcription failed: {e}");
-                error!("{err_msg}");
-                send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
+                reporter.fail(format!("Whisper transcription failed: {e}"));
                 return;
             },
         };
 
         if transcribed_text.is_empty() {
-            let warn_msg = "⚠️ No speech detected or transcription was empty.";
-            info!("{warn_msg}");
-            send_status(&proxy, window_id, warn_msg, MessageType::Warning);
+            let message = if loudest < SPEECH_RMS_THRESHOLD {
+                format!(
+                    "No speech heard (loudest input level {loudest:.3}, speech needs \
+                     {SPEECH_RMS_THRESHOLD}). Speak closer or check the microphone."
+                )
+            } else {
+                "Heard sound but no words were recognised. Try again.".to_string()
+            };
+            info!("{message}");
+            reporter.show(AiPhase::Notice(message));
             return;
         }
 
         info!("Transcribed text: {}", transcribed_text);
 
         // Stage 3: LLM command inference
-        send_status(
-            &proxy,
-            window_id,
-            format!(
-                "🤖 Generating command via LLM ({}) for: \"{}\"...",
-                voice_config.model, transcribed_text
-            ),
-            MessageType::Warning,
-        );
+        reporter.show(AiPhase::Thinking { model: voice_config.model.clone() });
 
         let command_from_llm = match call_llm(&transcribed_text, &context, &voice_config) {
             Ok(cmd) => cmd,
             Err(e) => {
-                let err_msg = format!("LLM command generation failed: {e}");
-                error!("{err_msg}");
-                send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
+                reporter.fail(format!("LLM command generation failed: {e}"));
                 return;
             },
         };
 
         info!("Command from LLM: {}", command_from_llm);
-
-        // Clear status from message bar upon success
-        clear_status(&proxy, window_id);
-
-        // Send command to interactive preview & safety guard
-        let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
-        let event = Event::new(
-            EventType::AiPreview { command: command_from_llm, is_destructive },
-            window_id,
-        );
-        let _ = proxy.send_event(event);
+        send_preview(&proxy, window_id, &reporter, command_from_llm);
     });
 }
 
@@ -645,42 +669,36 @@ pub fn handle_text_prompt(
     window_id: WindowId,
 ) {
     let voice_config = config.ai.clone();
+    let reporter = StatusReporter::start(proxy, window_id);
+    // Shown before the thread starts so the user sees "sent" immediately.
+    reporter.show(AiPhase::Thinking { model: voice_config.model.clone() });
     let proxy = proxy.clone();
 
     thread::spawn(move || {
-        send_status(
-            &proxy,
-            window_id,
-            format!(
-                "🤖 Generating command via LLM ({}) for: \"{}\"...",
-                voice_config.model, prompt_text
-            ),
-            MessageType::Warning,
-        );
-
         let command_from_llm = match call_llm(&prompt_text, &context, &voice_config) {
             Ok(cmd) => cmd,
             Err(e) => {
-                let err_msg = format!("LLM command generation failed: {e}");
-                error!("{err_msg}");
-                send_status(&proxy, window_id, format!("❌ {err_msg}"), MessageType::Error);
+                reporter.fail(format!("LLM command generation failed: {e}"));
                 return;
             },
         };
 
         info!("Command from LLM: {}", command_from_llm);
-
-        // Clear status from message bar upon success
-        clear_status(&proxy, window_id);
-
-        // Send command to interactive preview & safety guard
-        let is_destructive = crate::ai::is_destructive_command(&command_from_llm);
-        let event = Event::new(
-            EventType::AiPreview { command: command_from_llm, is_destructive },
-            window_id,
-        );
-        let _ = proxy.send_event(event);
+        send_preview(&proxy, window_id, &reporter, command_from_llm);
     });
+}
+
+/// Replace the status line with the command preview and the safety check's verdict.
+fn send_preview(
+    proxy: &EventLoopProxy<Event>,
+    window_id: WindowId,
+    reporter: &StatusReporter,
+    command: String,
+) {
+    reporter.clear();
+    let is_destructive = crate::ai::is_destructive_command(&command);
+    let event = Event::new(EventType::AiPreview { command, is_destructive }, window_id);
+    let _ = proxy.send_event(event);
 }
 
 #[cfg(test)]
@@ -910,5 +928,18 @@ mod tests {
         // 2 channels at 1 kHz: 100 ms = 100 frames = 200 samples, all 0.5.
         let rms = loudest_window_rms(&vec![0.5; 200], 2, 1_000);
         assert!((rms - 0.5).abs() < 1e-3, "rms was {rms}");
+    }
+
+    #[test]
+    fn level_jumps_up_immediately() {
+        assert_eq!(smooth_level(0.0, 0.1), 0.1);
+        assert_eq!(smooth_level(0.1, 0.5), 0.5);
+    }
+
+    #[test]
+    fn level_decays_gradually_when_the_signal_drops() {
+        let next = smooth_level(0.1, 0.0);
+        assert!((next - 0.085).abs() < 1e-6, "{next}");
+        assert_eq!(smooth_level(0.0, 0.0), 0.0);
     }
 }

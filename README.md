@@ -140,6 +140,22 @@ cargo run --release --bin alacritty
 
 ---
 
+## 👀 What the status line shows
+
+While the AI works, one line on the last terminal row always says what is happening, with a live seconds counter:
+
+```
+LISTENING [####------] 4s  speak now - Esc: cancel
+TRANSCRIBING speech... 2s
+SENT to qwen2.5-coder:3b - waiting for reply... 5s
+PREVIEW: df -h [Enter: Run | Tab: Edit | Esc: Cancel]
+ERROR: Can't reach the AI server ...  (press any key)
+```
+
+The `#` meter moves with your voice; if it stays empty while you speak, the microphone is not hearing you. Errors and notices stay until you press a key (the key still goes through).
+
+---
+
 ## 🩺 Troubleshooting
 
 Run `./target/debug/alacritty -v` to see log output. Kourage's own messages tell you what to fix; the usual ones:

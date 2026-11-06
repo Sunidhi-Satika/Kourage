@@ -657,7 +657,7 @@ impl Display {
         message_buffer: &MessageBuffer,
         search_state: &mut SearchState,
         ai_prompt_state: &AiPromptState,
-        ai_preview_state: &AiPreviewState,
+        _ai_preview_state: &AiPreviewState,
         config: &UiConfig,
     ) where
         T: EventListener,
@@ -708,8 +708,8 @@ impl Display {
         let message_bar_lines = message_buffer.message().map_or(0, |m| m.text(&new_size).len());
         let search_lines = usize::from(search_active);
         let ai_prompt_lines = usize::from(ai_prompt_state.is_active());
-        let ai_preview_lines = usize::from(ai_preview_state.is_active());
-        new_size.reserve_lines(message_bar_lines + search_lines + ai_prompt_lines + ai_preview_lines);
+        // The AI preview and status are overlays on the last terminal row: they reserve no line.
+        new_size.reserve_lines(message_bar_lines + search_lines + ai_prompt_lines);
 
         // Update resize increments.
         if config.window.resize_increments {
@@ -834,7 +834,8 @@ impl Display {
             || self.hint_state.active()
             || search_state.regex().is_some()
             || ai_prompt_state.is_active()
-            || ai_preview_state.is_active();
+            || ai_preview_state.is_active()
+            || ai_preview_state.has_status();
         if requires_full_damage {
             self.damage_tracker.frame().mark_fully_damaged();
             self.damage_tracker.next_frame().mark_fully_damaged();
@@ -979,21 +980,32 @@ impl Display {
                 let cmd = ai_preview_state.command().unwrap_or_default();
                 let is_destructive = ai_preview_state.is_destructive;
                 let (label, action_hint) = if is_destructive {
-                    ("⚠️ DANGER: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
+                    ("DANGER: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
                 } else {
-                    ("💡 AI: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
+                    ("PREVIEW: ", " [Enter: Run | Tab: Edit | Esc: Cancel]")
                 };
 
                 let preview_text =
                     Self::format_preview(cmd, label, action_hint, size_info.columns());
 
-                // Render the AI preview bar.
+                // Render the AI preview bar over the last terminal row.
                 self.draw_preview(config, &preview_text, is_destructive);
 
-                let line = size_info.screen_lines();
-                let column = Column(0);
+                Some(Point::new(size_info.screen_lines().saturating_sub(1), Column(0)))
+            },
+            None if ai_preview_state.has_status() => {
+                if let Some(status) = ai_preview_state.status.as_ref() {
+                    let text = crate::ai::status::format_status(
+                        status,
+                        std::time::Instant::now(),
+                        crate::voice::input_level(),
+                        size_info.columns(),
+                    );
+                    let is_error = matches!(status.phase, crate::ai::AiPhase::Error(_));
+                    self.draw_preview(config, &text, is_error);
+                }
 
-                Some(Point::new(line, column))
+                Some(Point::new(size_info.screen_lines().saturating_sub(1), Column(0)))
             },
             None => {
                 let num_lines = self.size_info.screen_lines();
@@ -1022,11 +1034,8 @@ impl Display {
         }
 
         if let Some(message) = message_buffer.message() {
-            let footer_offset = usize::from(
-                search_state.regex().is_some()
-                    || ai_prompt_state.is_active()
-                    || ai_preview_state.is_active(),
-            );
+            let footer_offset =
+                usize::from(search_state.regex().is_some() || ai_prompt_state.is_active());
             let text = message.text(&size_info);
 
             // Create a new rectangle for the background.
@@ -1463,7 +1472,8 @@ impl Display {
         let num_cols = self.size_info.columns();
         let text = format!("{text:<num_cols$}");
 
-        let point = Point::new(self.size_info.screen_lines(), Column(0));
+        // An overlay on the last terminal row, which is always on screen.
+        let point = Point::new(self.size_info.screen_lines().saturating_sub(1), Column(0));
 
         let (fg, bg) = if is_destructive {
             (config.colors.primary.background, config.colors.normal.red)

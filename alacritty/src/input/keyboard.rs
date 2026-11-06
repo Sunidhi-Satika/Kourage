@@ -55,6 +55,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         // Reset search delay when the user is still typing.
         self.reset_search_delay();
 
+        // An AI error or notice goes away on the next key press, which still reaches its target.
+        self.ctx.dismiss_ai_status();
+
         // Esc cancels a voice recording in progress instead of reaching the shell.
         if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_recording() {
             return;

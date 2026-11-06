@@ -150,6 +150,9 @@ pub trait ActionContext<T: EventListener> {
     fn ai_preview_edit(&mut self) {}
     fn ai_preview_cancel(&mut self) {}
     fn show_ai_preview(&mut self, _command: String, _is_destructive: bool) {}
+    fn set_ai_status(&mut self, _status: Option<crate::ai::AiStatus>) {}
+    fn dismiss_ai_status(&mut self) -> bool { false }
+    fn ai_status_tick(&mut self) {}
     fn extract_ai_context(&self) -> crate::ai::AiContext {
         crate::ai::AiContext::default()
     }

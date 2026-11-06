@@ -45,6 +45,7 @@ use alacritty_terminal::term::{self, ClipboardType, Term, TermMode};
 use alacritty_terminal::vte::ansi::NamedColor;
 
 #[cfg(unix)]
+use crate::ai::AiStatus;
 use crate::cli::{IpcConfig, ParsedOptions};
 use crate::cli::{Options as CliOptions, WindowOptions};
 use crate::clipboard::Clipboard;
@@ -204,9 +205,34 @@ pub struct AiPreviewState {
     pub command: Option<String>,
     /// Whether this command was flagged as dangerous/destructive.
     pub is_destructive: bool,
+    /// What the AI is doing right now (listening, waiting for the model, an error, ...).
+    ///
+    /// Lives here only to avoid threading another argument through the display code; Stage 1
+    /// moves the AI overlay state into its own type.
+    pub status: Option<AiStatus>,
 }
 
 impl AiPreviewState {
+    #[inline]
+    pub fn has_status(&self) -> bool {
+        self.status.is_some()
+    }
+
+    #[inline]
+    pub fn set_status(&mut self, status: Option<AiStatus>) {
+        self.status = status;
+    }
+
+    /// Remove an error or notice (called on a key press). Returns whether one was removed.
+    pub fn dismiss_status(&mut self) -> bool {
+        if self.status.as_ref().is_some_and(AiStatus::is_dismissible) {
+            self.status = None;
+            true
+        } else {
+            false
+        }
+    }
+
     #[inline]
     pub fn is_active(&self) -> bool {
         self.command.is_some()
@@ -709,6 +735,10 @@ pub enum EventType {
     SearchNext,
     Frame,
     AiPreview { command: String, is_destructive: bool },
+    /// Show (or, with `None`, clear) what the AI is doing.
+    AiStatus(Option<AiStatus>),
+    /// Redraw the status bar so its elapsed-seconds counter moves.
+    AiStatusTick,
 }
 
 impl From<TerminalEvent> for EventType {
@@ -840,6 +870,15 @@ pub struct ActionContext<'a, N, T> {
     pub master_fd: RawFd,
     #[cfg(not(windows))]
     pub shell_pid: u32,
+}
+
+impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
+    /// Repaint the AI status line. It is an overlay on the last terminal row, so unlike the
+    /// prompt bar it needs no layout change, only a redraw.
+    fn mark_ai_overlay_dirty(&mut self) {
+        self.display.damage_tracker.frame().mark_fully_damaged();
+        *self.dirty = true;
+    }
 }
 
 impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionContext<'a, N, T> {
@@ -1234,6 +1273,38 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
         self.display.damage_tracker.frame().mark_fully_damaged();
         self.display.pending_update.dirty = true;
         *self.dirty = true;
+    }
+
+    #[inline]
+    fn set_ai_status(&mut self, status: Option<AiStatus>) {
+        let size = self.display.size_info;
+        info!(
+            "AI status: {:?} (overlay row {} of {} lines, cell {}px, window {}x{}px)",
+            status.as_ref().map(|s| &s.phase),
+            size.screen_lines().saturating_sub(1),
+            size.screen_lines(),
+            size.cell_height(),
+            size.width(),
+            size.height()
+        );
+        self.ai_preview_state.set_status(status);
+        self.mark_ai_overlay_dirty();
+    }
+
+    #[inline]
+    fn dismiss_ai_status(&mut self) -> bool {
+        let dismissed = self.ai_preview_state.dismiss_status();
+        if dismissed {
+            self.mark_ai_overlay_dirty();
+        }
+        dismissed
+    }
+
+    #[inline]
+    fn ai_status_tick(&mut self) {
+        if self.ai_preview_state.has_status() {
+            self.mark_ai_overlay_dirty();
+        }
     }
 
     #[inline]
@@ -2263,6 +2334,8 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 EventType::AiPreview { command, is_destructive } => {
                     self.ctx.show_ai_preview(command, is_destructive);
                 },
+                EventType::AiStatus(status) => self.ctx.set_ai_status(status),
+                EventType::AiStatusTick => self.ctx.ai_status_tick(),
             },
             WinitEvent::WindowEvent { event, .. } => {
                 match event {
@@ -2421,6 +2494,7 @@ impl EventListener for EventProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::AiPhase;
 
     #[test]
     fn test_ai_prompt_input_and_backspace() {
@@ -2523,5 +2597,39 @@ mod tests {
     fn prompt_paste_drops_trailing_newlines() {
         assert_eq!(sanitize_prompt_paste("echo hi\n"), "echo hi");
         assert_eq!(sanitize_prompt_paste("echo hi\r\n\r\n"), "echo hi");
+    }
+
+    #[test]
+    fn ai_status_is_independent_of_the_preview_command() {
+        let mut state = AiPreviewState::default();
+        assert!(!state.has_status());
+
+        state.set_status(Some(AiStatus::new(AiPhase::Listening)));
+        assert!(state.has_status());
+        assert!(!state.is_active(), "a status is not a preview");
+
+        state.set("ls".into(), false);
+        state.clear();
+        assert!(state.has_status(), "clearing the preview keeps the status");
+
+        state.set_status(None);
+        assert!(!state.has_status());
+    }
+
+    #[test]
+    fn a_key_press_dismisses_only_errors_and_notices() {
+        let mut state = AiPreviewState::default();
+
+        state.set_status(Some(AiStatus::new(AiPhase::Transcribing)));
+        assert!(!state.dismiss_status());
+        assert!(state.has_status());
+
+        state.set_status(Some(AiStatus::new(AiPhase::Error("boom".into()))));
+        assert!(state.dismiss_status());
+        assert!(!state.has_status());
+
+        state.set_status(Some(AiStatus::new(AiPhase::Notice("note".into()))));
+        assert!(state.dismiss_status());
+        assert!(!state.dismiss_status(), "nothing left to dismiss");
     }
 }
