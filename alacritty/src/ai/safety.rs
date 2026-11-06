@@ -1,12 +1,17 @@
 //! Safety analyzer for AI-generated commands.
 
 /// Whether any command in a chain would end the user's shell session.
+///
+/// Heuristic, not a shell parser: it ignores quoting (so `echo "a; exit"` is flagged, which is
+/// the safe direction) and only looks through a few leading keywords and wrappers.
 fn ends_session(cmd: &str) -> bool {
+    const SKIPPED_PREFIXES: [&str; 8] = ["{", "then", "do", "else", "!", "command", "builtin", "sudo"];
+
     cmd.split(|c| matches!(c, ';' | '&' | '|' | '\n')).any(|segment| {
-        let mut words = segment.split_whitespace();
+        let mut words = segment.split_whitespace().skip_while(|w| SKIPPED_PREFIXES.contains(w));
         match words.next() {
             Some("exit" | "logout" | "exec") => true,
-            Some("kill") => words.any(|w| w == "$$"),
+            Some("kill") => words.any(|w| w.contains("$$")),
             _ => false,
         }
     })
@@ -131,7 +136,9 @@ mod tests {
     fn test_session_ending_commands() {
         let flagged = [
             "exit", "exit 0", "logout", "kill $$", "kill -9 $$", "exec bash", "ls; exit",
-            "true && exit", "false || exit 1", "echo hi\nexit", "EXIT",
+            "true && exit", "false || exit 1", "echo hi\nexit", "EXIT", "{ exit; }",
+            "if true; then exit; fi", "true && { exit; }", "command exit", "builtin exit",
+            "sudo kill $$", "kill -- -$$",
         ];
         for cmd in flagged {
             assert!(is_destructive_command(cmd), "should flag: {cmd:?}");

@@ -227,10 +227,17 @@ fn transcribe_audio(recording: &Recording, model_path_str: &str) -> Result<Strin
         to_whisper_input(&recording.samples, recording.channels, recording.sample_rate);
 
     if log::max_level() >= log::LevelFilter::Debug {
-        let path = format!("/tmp/kourage-voice-{}.wav", std::process::id());
-        match std::fs::write(&path, encode_wav_16k_mono(&audio_samples)) {
-            Ok(()) => info!("Wrote voice debug audio to {}", path),
-            Err(err) => warn!("Failed to write voice debug audio to {}: {}", path, err),
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let path = std::path::PathBuf::from(format!(
+            "/tmp/kourage-voice-{}-{}.wav",
+            std::process::id(),
+            secs
+        ));
+        match write_debug_wav(&path, &encode_wav_16k_mono(&audio_samples)) {
+            Ok(()) => info!("Wrote voice debug audio to {}", path.display()),
+            Err(err) => warn!("Failed to write voice debug audio to {}: {}", path.display(), err),
         }
     }
 
@@ -271,6 +278,17 @@ fn encode_wav_16k_mono(samples: &[f32]) -> Vec<u8> {
         wav.extend_from_slice(&((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
     }
     wav
+}
+
+/// Write a debug recording that only the current user can read, never overwriting a file.
+fn write_debug_wav(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(bytes)
 }
 
 #[derive(Serialize)]
@@ -583,5 +601,20 @@ mod tests {
         let pcm: Vec<i16> =
             wav[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
         assert_eq!(pcm, vec![32767, -32767, 32767]);
+    }
+
+    #[test]
+    fn debug_wav_is_private_and_never_overwrites() {
+        let path = std::env::temp_dir().join(format!("kourage-test-{}.wav", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        write_debug_wav(&path, b"abc").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert!(write_debug_wav(&path, b"xyz").is_err());
+        std::fs::remove_file(&path).unwrap();
     }
 }
