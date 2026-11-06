@@ -180,6 +180,16 @@ impl SilenceDetector {
     }
 }
 
+/// RMS of the loudest 100 ms window in interleaved device audio. Used to tell a quiet
+/// microphone from a muted one when no speech is detected.
+fn loudest_window_rms(samples: &[f32], channels: u16, sample_rate: u32) -> f32 {
+    let window = (sample_rate as usize / 10).max(1) * usize::from(channels.max(1));
+    samples
+        .chunks(window)
+        .map(|chunk| (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt())
+        .fold(0.0, f32::max)
+}
+
 pub fn init() {
     // Initialization logic if needed
 }
@@ -317,6 +327,11 @@ fn record_audio() -> Result<Option<Recording>, anyhow::Error> {
     }
 
     let samples = std::mem::take(&mut *samples.lock().unwrap());
+    info!(
+        "Recording stopped. Loudest 100 ms input level: {:.4} (speech is detected at {})",
+        loudest_window_rms(&samples, channels, sample_rate),
+        SPEECH_RMS_THRESHOLD
+    );
     Ok(Some(Recording { samples, channels, sample_rate }))
 }
 
@@ -872,5 +887,28 @@ mod tests {
     #[test]
     fn transcript_keeps_commands_that_merely_contain_those_words() {
         assert_eq!(clean_transcript("say bye to the old files"), "say bye to the old files");
+    }
+
+    #[test]
+    fn loudest_window_of_silence_is_zero() {
+        assert_eq!(loudest_window_rms(&vec![0.0; 4800], 1, 48_000), 0.0);
+        assert_eq!(loudest_window_rms(&[], 1, 48_000), 0.0);
+    }
+
+    #[test]
+    fn loudest_window_finds_a_burst_in_the_middle() {
+        // 48 kHz mono: 0.3 s of silence, 0.1 s at +-0.2, 0.3 s of silence.
+        let mut samples = vec![0.0f32; 14_400];
+        samples.extend(std::iter::repeat_n(0.2, 4_800));
+        samples.extend(vec![0.0f32; 14_400]);
+        let rms = loudest_window_rms(&samples, 1, 48_000);
+        assert!((rms - 0.2).abs() < 0.01, "rms was {rms}");
+    }
+
+    #[test]
+    fn loudest_window_handles_interleaved_channels() {
+        // 2 channels at 1 kHz: 100 ms = 100 frames = 200 samples, all 0.5.
+        let rms = loudest_window_rms(&vec![0.5; 200], 2, 1_000);
+        assert!((rms - 0.5).abs() < 1e-3, "rms was {rms}");
     }
 }
