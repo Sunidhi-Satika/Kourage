@@ -38,6 +38,48 @@ impl Drop for BusyGuard {
 /// Set while a voice command is recording/transcribing/generating.
 static VOICE_BUSY: AtomicBool = AtomicBool::new(false);
 
+/// Tracks whether the microphone is open and whether the user asked to cancel it.
+struct VoiceSession {
+    recording: AtomicBool,
+    cancelled: AtomicBool,
+}
+
+impl VoiceSession {
+    const fn new() -> Self {
+        Self { recording: AtomicBool::new(false), cancelled: AtomicBool::new(false) }
+    }
+
+    fn begin_recording(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+        self.recording.store(true, Ordering::SeqCst);
+    }
+
+    fn end_recording(&self) {
+        self.recording.store(false, Ordering::SeqCst);
+    }
+
+    /// Ask the recorder to stop and discard its audio. Only succeeds while recording.
+    fn request_cancel(&self) -> bool {
+        if self.recording.load(Ordering::SeqCst) {
+            self.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+static VOICE_SESSION: VoiceSession = VoiceSession::new();
+
+/// Cancel the recording in progress, if any. Returns whether there was one to cancel.
+pub fn cancel_recording() -> bool {
+    VOICE_SESSION.request_cancel()
+}
+
 /// Sample rate Whisper expects.
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
@@ -182,7 +224,8 @@ where
     Ok(stream)
 }
 
-fn record_audio() -> Result<Recording, anyhow::Error> {
+/// Record from the default microphone. `Ok(None)` means the user cancelled.
+fn record_audio() -> Result<Option<Recording>, anyhow::Error> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -231,7 +274,10 @@ fn record_audio() -> Result<Recording, anyhow::Error> {
     let start_time = std::time::Instant::now();
     let max_duration = Duration::from_secs(10);
 
-    while !should_stop.load(Ordering::SeqCst) && start_time.elapsed() < max_duration {
+    while !should_stop.load(Ordering::SeqCst)
+        && !VOICE_SESSION.is_cancelled()
+        && start_time.elapsed() < max_duration
+    {
         thread::sleep(Duration::from_millis(100));
     }
 
@@ -239,8 +285,12 @@ fn record_audio() -> Result<Recording, anyhow::Error> {
     drop(stream);
     info!("Recording stopped.");
 
+    if VOICE_SESSION.is_cancelled() {
+        return Ok(None);
+    }
+
     let samples = std::mem::take(&mut *samples.lock().unwrap());
-    Ok(Recording { samples, channels, sample_rate })
+    Ok(Some(Recording { samples, channels, sample_rate }))
 }
 
 /// The loaded Whisper model, kept between commands because loading it from disk is slow.
@@ -469,8 +519,17 @@ pub fn handle_voice_command(
             MessageType::Warning,
         );
 
-        let recording = match record_audio() {
-            Ok(recording) => recording,
+        VOICE_SESSION.begin_recording();
+        let recorded = record_audio();
+        VOICE_SESSION.end_recording();
+
+        let recording = match recorded {
+            Ok(Some(recording)) => recording,
+            Ok(None) => {
+                info!("Voice command cancelled");
+                send_status(&proxy, window_id, "Voice command cancelled", MessageType::Warning);
+                return;
+            },
             Err(e) => {
                 let err_msg = format!("Audio recording failed: {e}");
                 error!("{err_msg}");
@@ -735,5 +794,38 @@ mod tests {
         let mut out = vec![9.0; 5];
         convert_to_f32(&[0.5f32], &mut out);
         assert_eq!(out, vec![0.5]);
+    }
+
+    #[test]
+    fn cancel_is_refused_when_nothing_is_recording() {
+        let session = VoiceSession::new();
+        assert!(!session.request_cancel());
+        assert!(!session.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_while_recording_is_seen_by_the_recorder() {
+        let session = VoiceSession::new();
+        session.begin_recording();
+        assert!(session.request_cancel());
+        assert!(session.is_cancelled());
+    }
+
+    #[test]
+    fn beginning_a_new_recording_clears_an_old_cancel() {
+        let session = VoiceSession::new();
+        session.begin_recording();
+        session.request_cancel();
+        session.end_recording();
+        session.begin_recording();
+        assert!(!session.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_after_recording_ended_is_refused() {
+        let session = VoiceSession::new();
+        session.begin_recording();
+        session.end_recording();
+        assert!(!session.request_cancel());
     }
 }

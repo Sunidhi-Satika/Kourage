@@ -126,6 +126,8 @@ cargo run --release --bin alacritty
 | :--- | :--- | :--- |
 | `Ctrl + Shift + A` | `ToggleAiPrompt` | Opens/closes inline natural language AI prompt bar (`🤖 AI: `) |
 | `Ctrl + Shift + S` | `VoiceCommand` | Starts microphone recording and executes transcribed AI command |
+| `Esc` (while recording) | Cancel voice | Stops the microphone and discards the recording |
+| `Ctrl + Shift + V` (in prompt) | Paste | Pastes into the prompt; line breaks become spaces |
 | `Enter` (in prompt) | `AiPromptConfirm` | Submits prompt to LLM for shell command generation |
 | `Esc` (in prompt) | `AiPromptCancel` | Cancels and closes prompt overlay |
 | `Up` / `Down` (in prompt) | History Nav | Cycles through previous AI prompt history |

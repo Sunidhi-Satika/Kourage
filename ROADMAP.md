@@ -29,15 +29,15 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 - [x] ~~Holding Ctrl+Shift+S starts many overlapping recordings ("Connection refused" from ALSA).~~ Fixed: only one voice session runs at a time (`BusyGuard`, tested).
 - [x] ~~The prompt hotkey Ctrl+Shift+Space needs two presses under WSLg (the first Space never arrives), and it took vi mode's upstream binding.~~ Fixed: the prompt is now Ctrl+Shift+A, and Ctrl+Shift+Space toggles vi mode again.
 - [x] ~~Backspace (and any other bound key) inside the prompt or preview goes to the shell.~~ Fixed: only the prompt toggle binding fires while the overlay is open.
-- [ ] The input callback is hard-typed to `f32`, so stream creation fails on devices whose default format is `i16`/`u16`.
+- [x] ~~The input callback is hard-typed to `f32`, so stream creation fails on devices whose default format is `i16`/`u16`.~~ Fixed: the stream is built per sample format (`f32`, `i16`, `u16`, `i32`) and converted with `convert_to_f32` (tested).
 - [ ] Resampling is linear with no anti-alias filter. Fine for speech, but revisit if accuracy suffers.
-- [ ] There's no way to cancel a recording, and no push-to-talk.
-- [ ] The Whisper model is loaded from disk on every command (slow). The default `whisper_model_path` is a placeholder, so voice fails out of the box with no guidance.
-- [ ] Pasting into the prompt doesn't work (Paste is blocked while the overlay is open; it should insert into the prompt).
+- [x] ~~There's no way to cancel a recording, and no push-to-talk.~~ Fixed: Esc cancels a recording (`VoiceSession`, tested). Push-to-talk is still open: it needs key-release events.
+- [x] ~~The Whisper model is loaded from disk on every command (slow). The default `whisper_model_path` is a placeholder, so voice fails out of the box with no guidance.~~ Fixed: the model is cached after first load, and a missing path now gives download instructions.
+- [x] ~~Pasting into the prompt doesn't work (Paste is blocked while the overlay is open; it should insert into the prompt).~~ Fixed: paste is allowed while the prompt is open and line breaks become spaces (tested).
 - [x] ~~**Next up (found 2026-11-06 in a live test):** the model replied `` `du -sh .` `` with single backticks. Only triple-backtick blocks are stripped, so bash ran it as command substitution and tried to execute du's output. Strip single backticks too, with tests.~~ Fixed: `clean_llm_reply` (tested) strips fences and a wrapping backtick pair.
 - [ ] **Next up (dump added, tuning pending):** voice transcribed "Bye." (a typical Whisper hallucination on near-silence) after only 2.5 s of recording, so the recording probably stopped before the user spoke. Add a debug dump of the 16 kHz audio to `/tmp` (when debug logging is on), listen to it, then tune `SPEECH_RMS_THRESHOLD` and the timings. The dump now exists: run with `-vv` and listen to `/tmp/kourage-voice-<pid>-<time>.wav (mode 0600)`.
 - [x] ~~**Next up:** the preview marked `exit` as safe, and running it closed the terminal. Flag commands that end the session (`exit`, `logout`, `kill $$`, `exec …`).~~ Fixed (tested).
-- [ ] Voice has no default binding on macOS (it lives in `common_keybindings`, which excludes macOS).
+- [x] ~~Voice has no default binding on macOS (it lives in `common_keybindings`, which excludes macOS).~~ Fixed: Ctrl+Shift+S is now in the shared default bindings (tested).
 
 **LLM client robustness:**
 - No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`. **Fixed:** requests now send `num_predict: 128`, `repeat_penalty: 1.1` and a `\n\n` stop (`LlmOptions::for_command`, tested).

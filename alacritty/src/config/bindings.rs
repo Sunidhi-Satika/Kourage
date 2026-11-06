@@ -485,6 +485,8 @@ pub fn default_key_bindings() -> Vec<KeyBinding> {
         // AI prompt ("Ask"). Not on Ctrl+Shift+Space: the first Space of that chord is
         // swallowed under WSLg, and Ctrl+Space is an input-source switch on macOS.
         "a", ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH, ~BindingMode::VI; Action::ToggleAiPrompt;
+        // Voice command; Esc cancels the recording.
+        "s", ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH, ~BindingMode::VI; Action::VoiceCommand;
         // Vi mode.
         Space, ModifiersState::SHIFT | ModifiersState::CONTROL, ~BindingMode::SEARCH; Action::ToggleViMode;
         Space, ModifiersState::SHIFT | ModifiersState::CONTROL, +BindingMode::VI, ~BindingMode::SEARCH; Action::ScrollToBottom;
@@ -585,7 +587,6 @@ fn common_keybindings() -> Vec<KeyBinding> {
         "-",    ModifiersState::CONTROL;                                                                 Action::DecreaseFontSize;
         "+" => KeyLocation::Numpad, ModifiersState::CONTROL;                                             Action::IncreaseFontSize;
         "-" => KeyLocation::Numpad, ModifiersState::CONTROL;                                             Action::DecreaseFontSize;
-        "s",    ModifiersState::CONTROL | ModifiersState::SHIFT, ~BindingMode::VI, ~BindingMode::SEARCH; Action::VoiceCommand;
     )
 }
 
@@ -1303,6 +1304,16 @@ mod tests {
             .filter(|binding| binding.is_triggered_by(mode, mods, &input))
             .map(|binding| binding.action)
             .collect()
+    }
+
+    #[test]
+    fn ctrl_shift_s_starts_voice_command_on_every_platform() {
+        let actions = default_actions_for(
+            Key::Character("s".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            BindingMode::empty(),
+        );
+        assert_eq!(actions, vec![Action::VoiceCommand]);
     }
 
     #[test]

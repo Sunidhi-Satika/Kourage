@@ -60,6 +60,11 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             return;
         }
 
+        // Esc cancels a voice recording in progress instead of reaching the shell.
+        if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_recording() {
+            return;
+        }
+
         if self.ctx.ai_preview_active() {
             match &key.logical_key {
                 Key::Named(NamedKey::Enter) => {
