@@ -127,6 +127,9 @@ Only a person at a keyboard and microphone can do these. None is ticked.
 - [ ] Press Esc while the status says SENT (Thinking): confirm `Request cancelled.` appears.
 - [ ] Status-line redraw check: no flicker or stale text while LISTENING, SENT, errors and notices (and the 4 redraws a second question above).
 - [ ] Clone-to-first-command run on a clean machine using only the README.
+- [ ] Startup notice, other cases: model not pulled shows the "ollama pull" notice; everything fine (Whisper path left at the placeholder) shows no notice; a request started right away is never covered by the notice.
+- [ ] Esc with nothing in flight still reaches the shell (try it in a shell and in a full-screen program such as vim); two prompts sent quickly, then Esc, cancels the newer one and the older one still delivers its preview.
+- [ ] After pushing, check the GitHub Actions run on Windows and macOS (CI runs `cargo test` and clippy there; the `event.rs` import fix and the `cfg` code paths could only be checked by reading).
 
 ---
 
