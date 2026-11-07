@@ -8,6 +8,7 @@ use super::{Backend, BackendError, GenerateRequest};
 #[derive(Debug)]
 pub struct MockBackend {
     outcome: Outcome,
+    models: Models,
     requests: Mutex<Vec<GenerateRequest>>,
 }
 
@@ -15,6 +16,14 @@ pub struct MockBackend {
 enum Outcome {
     Replies(Vec<String>),
     Error(BackendError),
+}
+
+/// What `installed_models` answers.
+#[derive(Debug)]
+enum Models {
+    Unsupported,
+    Listed(Vec<String>),
+    Unreachable,
 }
 
 impl MockBackend {
@@ -28,8 +37,22 @@ impl MockBackend {
         Self::with(Outcome::Error(error))
     }
 
+    /// Report `models` as installed (and reply with nothing to `generate`).
+    pub fn with_models(models: &[&str]) -> Self {
+        let mut mock = Self::replying(&[]);
+        mock.models = Models::Listed(models.iter().map(|m| m.to_string()).collect());
+        mock
+    }
+
+    /// Fail `installed_models` as if the server could not be reached.
+    pub fn unreachable() -> Self {
+        let mut mock = Self::replying(&[]);
+        mock.models = Models::Unreachable;
+        mock
+    }
+
     fn with(outcome: Outcome) -> Self {
-        Self { outcome, requests: Mutex::new(Vec::new()) }
+        Self { outcome, models: Models::Unsupported, requests: Mutex::new(Vec::new()) }
     }
 
     /// Every request received so far, oldest first.
@@ -46,6 +69,18 @@ impl Backend for MockBackend {
             Outcome::Replies(replies) if replies.is_empty() => Ok(String::new()),
             Outcome::Replies(replies) => Ok(replies[(requests.len() - 1) % replies.len()].clone()),
             Outcome::Error(error) => Err(error.clone()),
+        }
+    }
+
+    fn installed_models(&self) -> Result<Option<Vec<String>>, BackendError> {
+        match &self.models {
+            Models::Unsupported => Ok(None),
+            Models::Listed(models) => Ok(Some(models.clone())),
+            Models::Unreachable => Err(BackendError::Connect {
+                url: "http://localhost:11434/api/generate".into(),
+                model: self.model().into(),
+                detail: "connection refused".into(),
+            }),
         }
     }
 

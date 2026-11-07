@@ -28,6 +28,16 @@ struct OllamaOptions<'a> {
 }
 
 #[derive(Deserialize)]
+struct TagsResponse {
+    models: Vec<TagsModel>,
+}
+
+#[derive(Deserialize)]
+struct TagsModel {
+    name: String,
+}
+
+#[derive(Deserialize)]
 struct OllamaResponse {
     response: String,
 }
@@ -61,27 +71,23 @@ impl OllamaBackend {
         serde_json::to_string(&body).expect("request body always serializes")
     }
 
+    /// Map a failed send onto a `BackendError` naming `url`.
+    fn transport_error(&self, url: &str, timeout_secs: u64, e: &reqwest::Error) -> BackendError {
+        let (url, model) = (url.to_string(), self.settings.model.clone());
+        if e.is_timeout() {
+            BackendError::Timeout { url, timeout_secs }
+        } else if e.is_connect() {
+            BackendError::Connect { url, model, detail: e.to_string() }
+        } else {
+            BackendError::Transport { url, model, detail: e.to_string() }
+        }
+    }
+
     /// Send `request` and return the response's `response` field.
     fn post(&self, request: &GenerateRequest, timeout_secs: u64) -> Result<String, BackendError> {
         let url = &self.settings.api_url;
         let model = &self.settings.model;
-        let transport = |e: reqwest::Error| {
-            if e.is_timeout() {
-                BackendError::Timeout { url: url.clone(), timeout_secs }
-            } else if e.is_connect() {
-                BackendError::Connect {
-                    url: url.clone(),
-                    model: model.clone(),
-                    detail: e.to_string(),
-                }
-            } else {
-                BackendError::Transport {
-                    url: url.clone(),
-                    model: model.clone(),
-                    detail: e.to_string(),
-                }
-            }
-        };
+        let transport = |e: reqwest::Error| self.transport_error(url, timeout_secs, &e);
 
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
@@ -123,6 +129,46 @@ impl Backend for OllamaBackend {
         let request =
             GenerateRequest { prompt: prefix.to_string(), options: GenerateOptions::for_warm_up() };
         self.post(&request, self.settings.timeout_secs.max(60)).map(drop)
+    }
+
+    /// `GET /api/tags` on the server `api_url` points at.
+    fn installed_models(&self) -> Result<Option<Vec<String>>, BackendError> {
+        let api_url = &self.settings.api_url;
+        let timeout_secs = self.settings.timeout_secs;
+        let model = &self.settings.model;
+        let mut url = reqwest::Url::parse(api_url).map_err(|e| BackendError::Transport {
+            url: api_url.clone(),
+            model: model.clone(),
+            detail: e.to_string(),
+        })?;
+        url.set_path("/api/tags");
+        url.set_query(None);
+        let tags_url = url.to_string();
+        let transport = |e: reqwest::Error| self.transport_error(&tags_url, timeout_secs, &e);
+
+        let response = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .build()
+            .map_err(transport)?
+            .get(url)
+            .send()
+            .map_err(transport)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(BackendError::Http {
+                url: tags_url,
+                model: model.clone(),
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        response
+            .json::<TagsResponse>()
+            .map(|tags| Some(tags.models.into_iter().map(|m| m.name).collect()))
+            .map_err(|e| BackendError::Malformed { url: tags_url, detail: e.to_string() })
     }
 
     fn model(&self) -> &str {
@@ -307,7 +353,9 @@ mod tests {
         assert!(matches!(err, BackendError::Connect { .. }), "{err:?}");
         assert_eq!(
             err.to_string(),
-            format!("Can't reach the AI server at {url}. Is Ollama running? Start it with `ollama serve`.")
+            format!(
+                "Can't reach the AI server at {url}. Is Ollama running? Start it with `ollama serve`."
+            )
         );
     }
 
@@ -350,6 +398,37 @@ mod tests {
     fn warm_up_failure_returns_error_without_panic() {
         let url = closed_port_url();
         let err = backend(&url, 5).warm_up("PREFIX").unwrap_err();
+        assert!(matches!(err, BackendError::Connect { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn installed_models_parses_tags() {
+        let (url, server) =
+            serve_once("200 OK", r#"{"models":[{"name":"a:1"},{"name":"b:latest"}]}"#);
+        let models = backend(&url, 5).installed_models().unwrap();
+        server.join().unwrap();
+        assert_eq!(models, Some(vec!["a:1".to_string(), "b:latest".to_string()]));
+    }
+
+    #[test]
+    fn installed_models_garbage_body_is_malformed_error() {
+        let (url, server) = serve_once("200 OK", "this is not json");
+        let err = backend(&url, 5).installed_models().unwrap_err();
+        server.join().unwrap();
+        assert!(matches!(err, BackendError::Malformed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn installed_models_uses_tags_path_on_the_configured_host() {
+        let (url, server) = serve_once("200 OK", r#"{"models":[]}"#);
+        backend(&url, 5).installed_models().unwrap();
+        let sent = server.join().unwrap();
+        assert!(sent.starts_with("GET /api/tags "), "{sent}");
+    }
+
+    #[test]
+    fn installed_models_unreachable_is_connect_error() {
+        let err = backend(&closed_port_url(), 5).installed_models().unwrap_err();
         assert!(matches!(err, BackendError::Connect { .. }), "{err:?}");
     }
 

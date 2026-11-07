@@ -101,6 +101,12 @@ pub trait Backend: Send + Sync {
         Ok(())
     }
 
+    /// The names of the models installed on the server. `None` means this backend cannot
+    /// list them. Default: `None`.
+    fn installed_models(&self) -> Result<Option<Vec<String>>, BackendError> {
+        Ok(None)
+    }
+
     /// The model name, for status text.
     fn model(&self) -> &str;
 }
