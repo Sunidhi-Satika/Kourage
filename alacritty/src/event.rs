@@ -1231,7 +1231,7 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
 
     #[inline]
     fn extract_ai_context(&self) -> AiContext {
-        AiContext::extract(
+        crate::ai::context::extract_ai_context(
             #[cfg(not(windows))]
             self.master_fd,
             #[cfg(not(windows))]
