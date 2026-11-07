@@ -23,19 +23,6 @@ pub fn clean_llm_reply(raw: &str) -> String {
     text.to_string()
 }
 
-/// Require a reply to be exactly one line, so one confirm never runs several commands.
-pub fn require_single_line(cmd: &str) -> Result<String, String> {
-    let lines: Vec<&str> = cmd.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
-    match lines.as_slice() {
-        [only] => Ok((*only).to_string()),
-        [] => Ok(String::new()),
-        many => Err(format!(
-            "The model returned {} lines but a single command is required. Try rephrasing.",
-            many.len()
-        )),
-    }
-}
-
 /// Why a raw model reply cannot be used as a command. `Display` is the user-facing message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplyError {
@@ -70,54 +57,50 @@ pub fn finalize_reply(raw: &str) -> Result<String, ReplyError> {
     }
 }
 
-/// String-error form of [`finalize_reply`].
-pub fn finalize_llm_reply(raw: &str) -> Result<String, String> {
-    finalize_reply(raw).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn reply_error_display_is_the_user_message() {
+        assert_eq!(
+            ReplyError::Empty.to_string(),
+            "The model returned an empty command. Try rephrasing."
+        );
+        assert_eq!(
+            ReplyError::MultiLine(3).to_string(),
+            "The model returned 3 lines but a single command is required. Try rephrasing."
+        );
+    }
+
+    #[test]
+    fn finalize_accepts_one_line_and_blank_padding() {
+        assert_eq!(finalize_reply("ls -la").unwrap(), "ls -la");
+        assert_eq!(finalize_reply("\n\nls\n\n").unwrap(), "ls");
+    }
+
+    #[test]
     fn finalize_accepts_fenced_and_backticked_replies() {
-        assert_eq!(finalize_llm_reply("```bash\nls -la\n```").unwrap(), "ls -la");
-        assert_eq!(finalize_llm_reply("`du -sh .`").unwrap(), "du -sh .");
+        assert_eq!(finalize_reply("```bash\nls -la\n```").unwrap(), "ls -la");
+        assert_eq!(finalize_reply("`du -sh .`").unwrap(), "du -sh .");
     }
 
     #[test]
     fn finalize_rejects_empty_replies() {
         for raw in ["", "   \n", "``", "```\n```"] {
-            let err = finalize_llm_reply(raw).unwrap_err();
-            assert!(err.contains("empty"), "{raw:?} -> {err}");
+            assert_eq!(finalize_reply(raw), Err(ReplyError::Empty), "{raw:?}");
         }
     }
 
     #[test]
     fn finalize_rejects_multi_line_replies() {
-        let err = finalize_llm_reply("cd /tmp\nls").unwrap_err();
-        assert!(err.contains("2 lines"), "{err}");
+        assert_eq!(finalize_reply("cd /tmp\nls"), Err(ReplyError::MultiLine(2)));
+        assert_eq!(finalize_reply("cd /tmp\nrm -rf *"), Err(ReplyError::MultiLine(2)));
     }
 
     #[test]
-    fn require_single_line_accepts_one_line() {
-        assert_eq!(require_single_line("ls -la").unwrap(), "ls -la");
-    }
-
-    #[test]
-    fn require_single_line_rejects_several_lines() {
-        let err = require_single_line("cd /tmp\nrm -rf *").unwrap_err();
-        assert!(err.contains("2 lines"), "unexpected message: {err}");
-    }
-
-    #[test]
-    fn require_single_line_ignores_blank_lines_around_one_command() {
-        assert_eq!(require_single_line("\n\nls\n\n").unwrap(), "ls");
-    }
-
-    #[test]
-    fn require_single_line_rejects_backslash_continuation() {
-        assert!(require_single_line("ls \\\n  -la").is_err());
+    fn finalize_rejects_backslash_continuation() {
+        assert_eq!(finalize_reply("ls \\\n  -la"), Err(ReplyError::MultiLine(2)));
     }
 
     #[test]

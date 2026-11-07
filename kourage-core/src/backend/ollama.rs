@@ -215,6 +215,9 @@ mod tests {
     }
 
     /// A URL on which nothing is listening.
+    ///
+    /// Binds port 0 and drops the listener, so there is a tiny window in which another
+    /// process could grab the port; acceptable for tests.
     fn closed_port_url() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/api/generate", listener.local_addr().unwrap());

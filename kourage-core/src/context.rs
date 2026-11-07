@@ -211,6 +211,8 @@ mod tests {
             recent_terminal_lines: Some("last line".into()),
         };
         assert_eq!(gather(), expected);
-        assert_eq!(gather().format_prompt("list files"), gather().format_prompt("list files"));
+        let prompt = gather().format_prompt("list files");
+        assert!(prompt.contains("TestOS 1.0"), "{prompt}");
+        assert!(prompt.contains("testsh"), "{prompt}");
     }
 }

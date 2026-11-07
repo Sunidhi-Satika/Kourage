@@ -15,6 +15,7 @@ pub use ollama::OllamaBackend;
 pub struct LlmSettings {
     pub api_url: String,
     pub model: String,
+    /// The configured default; the per-request `GenerateOptions.temperature` wins.
     pub temperature: f32,
     pub timeout_secs: u64,
 }

@@ -28,9 +28,9 @@ pub enum AskError {
 impl fmt::Display for AskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyReply => ReplyError::Empty.fmt(f),
-            Self::MultiLine(n) => ReplyError::MultiLine(*n).fmt(f),
-            Self::Backend(e) => e.fmt(f),
+            Self::EmptyReply => fmt::Display::fmt(&ReplyError::Empty, f),
+            Self::MultiLine(n) => fmt::Display::fmt(&ReplyError::MultiLine(*n), f),
+            Self::Backend(e) => fmt::Display::fmt(e, f),
         }
     }
 }

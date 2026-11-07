@@ -41,6 +41,8 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 ### Stage 0 gaps
 
+- [ ] OPEN: warm-up fires unconditionally at startup; consider a config flag to disable it.
+
 **Voice and hotkeys:**
 - [x] ~~Float WAV written, read back as `i16`.~~ Fixed: audio now stays in memory, so there's no WAV round-trip.
 - [x] ~~No resampling to 16 kHz; only 2-channel downmix.~~ Fixed: any channel count and any rate are converted (`to_whisper_input`, tested).
@@ -121,6 +123,7 @@ Exit criteria: terminal behaviour is unchanged, and `kouraged` can be driven fro
 Progress:
 - [x] Stage 1, first half (2026-11-07): `kourage-core` extracted (UI-free crate with Backend trait, Ollama + mock backends, `ask()` entry point, golden tests). It lives in the top-level `kourage-core/` directory as a workspace member and holds prompt building, safety analysis, reply cleaning, LLM error messages, `AiContext` and the `Backend` trait. `cargo tree -p kourage-core` shows no `winit`, `alacritty_terminal`, `cpal` or `whisper-rs`. The terminal now calls `kourage_core::ask` from `voice.rs`; Whisper and audio capture stay in the terminal for now. Design: `docs/superpowers/specs/2026-11-07-kourage-core-design.md`.
 - [ ] OPEN: manual smoke test of the extracted flow in the real app (`./target/debug/alacritty -v`, Ollama running; needs an interactive session): the text prompt "show disk usage" shows a preview that can be cancelled; "delete everything here" shows a flagged (destructive) preview; with Ollama stopped, the status line shows the actionable error. Compare the wording with the pre-refactor messages.
+- [ ] Note: kourage-core modules are both `pub mod` and re-exported at the crate root; pick one path style before external users.
 - [ ] Second half: the `kouraged` daemon, the CLI, more backends and `kourage.toml`.
 
 ## Stage 2: A genuinely useful terminal agent

@@ -1,6 +1,6 @@
 //! A scripted backend for tests.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use super::{Backend, BackendError, GenerateRequest};
 
@@ -34,13 +34,13 @@ impl MockBackend {
 
     /// Every request received so far, oldest first.
     pub fn requests(&self) -> Vec<GenerateRequest> {
-        self.requests.lock().unwrap().clone()
+        self.requests.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 }
 
 impl Backend for MockBackend {
     fn generate(&self, request: &GenerateRequest) -> Result<String, BackendError> {
-        let mut requests = self.requests.lock().unwrap();
+        let mut requests = self.requests.lock().unwrap_or_else(PoisonError::into_inner);
         requests.push(request.clone());
         match &self.outcome {
             Outcome::Replies(replies) if replies.is_empty() => Ok(String::new()),

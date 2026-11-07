@@ -529,7 +529,8 @@ fn run_prompt(
     Ok(proposal)
 }
 
-/// Run `instruction` against the configured Ollama server and show the preview or the error.
+/// Run `instruction` against the configured Ollama server. On success, sends the preview event;
+/// on error, calls `reporter.fail`.
 fn propose_command(
     instruction: &str,
     context: &AiContext,
@@ -663,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn text_prompt_flow_reaches_preview_event_with_mock() {
+    fn text_prompt_flow_yields_proposal_with_mock() {
         let safe = prompt_with(&MockBackend::replying(&["`du -sh .`"])).unwrap();
         assert_eq!(safe, Proposal { command: "du -sh .".into(), is_destructive: false });
 
