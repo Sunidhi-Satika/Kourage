@@ -8,6 +8,8 @@ pub struct Voice {
     pub model: String,
     pub temperature: f32,
     pub timeout_secs: u64,
+    /// Load the model in the background at startup so the first prompt isn't a cold start.
+    pub warm_up: bool,
 }
 
 impl Default for Voice {
@@ -18,6 +20,7 @@ impl Default for Voice {
             model: "qwen2.5-coder:3b".to_string(),
             temperature: 0.0,
             timeout_secs: 15,
+            warm_up: true,
         }
     }
 }
@@ -116,6 +119,24 @@ mod tests {
         let warning = normalize_legacy_section(&mut config).expect("warning");
         assert!(warning.contains("both"), "{warning}");
         assert_eq!(config, table("[ai]\nmodel = \"new\"\ntimeout_secs = 5\n"));
+    }
+
+    #[test]
+    fn warm_up_defaults_to_true() {
+        assert!(Voice::default().warm_up);
+        assert!(ui_config_from("[ai]\nmodel = \"x\"\n").ai.warm_up);
+    }
+
+    #[test]
+    fn warm_up_can_be_disabled() {
+        let config = ui_config_from("[ai]\nwarm_up = false\n");
+        assert!(!config.ai.warm_up);
+    }
+
+    #[test]
+    fn legacy_voice_section_accepts_warm_up() {
+        let config = ui_config_from("[voice]\nwarm_up = false\n");
+        assert!(!config.ai.warm_up);
     }
 
     #[test]

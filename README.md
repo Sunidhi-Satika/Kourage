@@ -104,6 +104,7 @@ llm_api_url = "http://localhost:11434/api/generate"
 model = "qwen2.5-coder:3b" # or "llama3"
 temperature = 0.0
 timeout_secs = 15
+warm_up = true # load the model at startup so the first prompt is fast; false to skip
 ```
 
 ### 5. Build and Run
