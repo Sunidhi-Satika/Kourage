@@ -44,9 +44,10 @@ use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{self, ClipboardType, Term, TermMode};
 use alacritty_terminal::vte::ansi::NamedColor;
 
+use crate::ai::{AiPhase, AiStatus};
 #[cfg(unix)]
-use crate::ai::AiStatus;
-use crate::cli::{IpcConfig, ParsedOptions};
+use crate::cli::IpcConfig;
+use crate::cli::ParsedOptions;
 use crate::cli::{Options as CliOptions, WindowOptions};
 use crate::clipboard::Clipboard;
 use crate::config::ui_config::{HintAction, HintInternalAction};
@@ -223,6 +224,15 @@ impl AiPreviewState {
         self.status = status;
     }
 
+    /// Show `message` as a notice unless a status is already showing. Returns whether it was shown.
+    pub fn show_notice_if_idle(&mut self, message: String) -> bool {
+        if self.status.is_some() {
+            return false;
+        }
+        self.status = Some(AiStatus::new(AiPhase::Notice(message)));
+        true
+    }
+
     /// Remove an error or notice (called on a key press). Returns whether one was removed.
     pub fn dismiss_status(&mut self) -> bool {
         if self.status.as_ref().is_some_and(AiStatus::is_dismissible) {
@@ -343,7 +353,11 @@ impl Processor {
         )?;
 
         self.gl_config = Some(window_context.display.gl_context().config());
-        self.windows.insert(window_context.id(), window_context);
+        let window_id = window_context.id();
+        self.windows.insert(window_id, window_context);
+
+        // Runs in the background; only the first call in the process does anything.
+        voice::announce_setup_issues(&self.config, &self.proxy, window_id);
 
         Ok(())
     }
@@ -739,6 +753,8 @@ pub enum EventType {
     AiStatus(Option<AiStatus>),
     /// Redraw the status bar so its elapsed-seconds counter moves.
     AiStatusTick,
+    /// Show the startup setup notice, unless the status line is already in use.
+    AiSetupNotice(String),
 }
 
 impl From<TerminalEvent> for EventType {
@@ -878,6 +894,13 @@ impl<'a, N: Notify + 'a, T: EventListener> ActionContext<'a, N, T> {
     fn mark_ai_overlay_dirty(&mut self) {
         self.display.damage_tracker.frame().mark_fully_damaged();
         *self.dirty = true;
+    }
+
+    /// Show the startup setup notice without replacing a status that is already showing.
+    fn show_ai_notice_if_idle(&mut self, message: String) {
+        if self.ai_preview_state.show_notice_if_idle(message) {
+            self.mark_ai_overlay_dirty();
+        }
     }
 }
 
@@ -2336,6 +2359,7 @@ impl input::Processor<EventProxy, ActionContext<'_, Notifier, EventProxy>> {
                 },
                 EventType::AiStatus(status) => self.ctx.set_ai_status(status),
                 EventType::AiStatusTick => self.ctx.ai_status_tick(),
+                EventType::AiSetupNotice(message) => self.ctx.show_ai_notice_if_idle(message),
             },
             WinitEvent::WindowEvent { event, .. } => {
                 match event {
@@ -2614,6 +2638,18 @@ mod tests {
 
         state.set_status(None);
         assert!(!state.has_status());
+    }
+
+    #[test]
+    fn setup_notice_never_replaces_a_status_in_use() {
+        let mut state = AiPreviewState::default();
+        assert!(state.show_notice_if_idle("setup".into()));
+        let shown = &state.status.as_ref().unwrap().phase;
+        assert!(matches!(shown, AiPhase::Notice(m) if m == "setup"), "{shown:?}");
+
+        state.set_status(Some(AiStatus::new(AiPhase::Thinking { model: "m".into() })));
+        assert!(!state.show_notice_if_idle("setup".into()));
+        assert!(matches!(state.status.as_ref().unwrap().phase, AiPhase::Thinking { .. }));
     }
 
     #[test]

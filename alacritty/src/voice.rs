@@ -11,7 +11,7 @@ use winit::window::WindowId;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use kourage_core::{ask, Backend, LlmSettings, OllamaBackend, Proposal};
+use kourage_core::{ask, check_setup, Backend, LlmSettings, OllamaBackend, Proposal, SetupIssue};
 
 use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
 use crate::config::ui_config::UiConfig;
@@ -244,6 +244,12 @@ impl StatusReporter {
     fn fail(&self, message: String) {
         error!("{message}");
         self.show(AiPhase::Error(message));
+    }
+
+    /// Show a notice only if the status line is not already in use.
+    fn notice_if_idle(&self, message: String) {
+        let event = Event::new(EventType::AiSetupNotice(message), self.window_id);
+        let _ = self.proxy.send_event(event);
     }
 }
 
@@ -513,6 +519,52 @@ pub fn warm_up_llm(voice_config: &Voice) {
     });
 }
 
+/// Set once the startup setup check has been started, so only the first window gets it.
+static SETUP_ANNOUNCED: AtomicBool = AtomicBool::new(false);
+
+/// The Whisper path as the check must see it: `~/` expanded like when the model is loaded.
+fn whisper_path_for_check(path: &str) -> String {
+    resolve_path(path).to_string_lossy().into_owned()
+}
+
+/// The one-line status text for `issues`, or `None` when nothing needs the user's attention.
+/// An unconfigured Whisper path is skipped: text-only users must not be nagged about it.
+fn setup_summary(issues: &[SetupIssue]) -> Option<String> {
+    let mut shown =
+        issues.iter().filter(|issue| !matches!(issue, SetupIssue::WhisperNotConfigured { .. }));
+    let first = shown.next()?.message().to_string();
+    match shown.count() {
+        0 => Some(first),
+        more => Some(format!("{first} (+{more} more, see the log)")),
+    }
+}
+
+/// Check in the background what the AI features are missing (Ollama, the model, Whisper),
+/// log every issue and show a summary on `window_id`'s status line. Runs once per process.
+pub fn announce_setup_issues(
+    config: &UiConfig,
+    proxy: &EventLoopProxy<Event>,
+    window_id: WindowId,
+) {
+    if SETUP_ANNOUNCED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let backend = OllamaBackend::new(llm_settings(&config.ai));
+    let whisper_path = whisper_path_for_check(&config.ai.whisper_model_path);
+    let proxy = proxy.clone();
+
+    thread::spawn(move || {
+        let issues = check_setup(&backend, &whisper_path);
+        for issue in &issues {
+            warn!("Setup: {}", issue.message());
+        }
+        if let Some(summary) = setup_summary(&issues) {
+            StatusReporter::start(&proxy, window_id).notice_if_idle(summary);
+        }
+    });
+}
+
 /// Ask `backend` for a command. The error is the text shown in the status line.
 fn run_prompt(
     backend: &dyn Backend,
@@ -655,7 +707,7 @@ fn send_preview(
 mod tests {
     use super::*;
 
-    use kourage_core::{BackendError, MockBackend};
+    use kourage_core::{BackendError, MockBackend, WHISPER_PLACEHOLDER_PATH};
 
     const CHUNK: Duration = Duration::from_millis(10);
 
@@ -770,6 +822,59 @@ mod tests {
         static FLAG: AtomicBool = AtomicBool::new(false);
         drop(BusyGuard::try_acquire(&FLAG));
         assert!(BusyGuard::try_acquire(&FLAG).is_some());
+    }
+
+    fn unreachable() -> SetupIssue {
+        SetupIssue::BackendUnreachable { message: "Is Ollama running?".into() }
+    }
+
+    fn model_missing() -> SetupIssue {
+        SetupIssue::ModelMissing { model: "m".into(), message: "Run `ollama pull m`.".into() }
+    }
+
+    #[test]
+    fn setup_summary_is_none_without_issues() {
+        assert_eq!(setup_summary(&[]), None);
+    }
+
+    #[test]
+    fn setup_summary_of_one_issue_is_its_message() {
+        assert_eq!(setup_summary(&[unreachable()]), Some("Is Ollama running?".into()));
+    }
+
+    #[test]
+    fn setup_summary_of_two_issues_points_to_the_log() {
+        assert_eq!(
+            setup_summary(&[unreachable(), model_missing()]),
+            Some("Is Ollama running? (+1 more, see the log)".into())
+        );
+    }
+
+    #[test]
+    fn setup_summary_skips_whisper_not_configured() {
+        let not_configured = SetupIssue::WhisperNotConfigured { message: "placeholder".into() };
+        assert_eq!(setup_summary(std::slice::from_ref(&not_configured)), None);
+        assert_eq!(
+            setup_summary(&[not_configured, model_missing()]),
+            Some("Run `ollama pull m`.".into())
+        );
+    }
+
+    #[test]
+    fn setup_summary_includes_whisper_file_missing() {
+        let missing =
+            SetupIssue::WhisperFileMissing { path: "/x.bin".into(), message: "Download".into() };
+        assert_eq!(setup_summary(&[missing]), Some("Download".into()));
+    }
+
+    #[test]
+    fn whisper_path_for_check_expands_home_only() {
+        if let Some(home) = home::home_dir() {
+            let expected = home.join("x.bin").to_string_lossy().into_owned();
+            assert_eq!(whisper_path_for_check("~/x.bin"), expected);
+        }
+        assert_eq!(whisper_path_for_check("/abs/model.bin"), "/abs/model.bin");
+        assert_eq!(whisper_path_for_check(WHISPER_PLACEHOLDER_PATH), WHISPER_PLACEHOLDER_PATH);
     }
 
     #[test]
