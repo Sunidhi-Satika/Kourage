@@ -52,7 +52,7 @@ pub fn format_status(status: &AiStatus, now: Instant, level: f32, columns: usize
         AiPhase::Transcribing => format!("TRANSCRIBING speech... {secs}s"),
         AiPhase::Thinking { model } => {
             let hint = if secs >= 10 { " (the first request loads the model)" } else { "" };
-            format!("SENT to {model} - waiting for reply... {secs}s{hint}")
+            format!("SENT to {model} - waiting for reply... {secs}s{hint} (Esc to cancel)")
         },
         AiPhase::Error(message) => format!("ERROR: {message}  (press any key)"),
         AiPhase::Notice(message) => format!("{message}  (press any key)"),
@@ -108,6 +108,7 @@ mod tests {
         assert!(text.contains("SENT") && text.contains("qwen2.5-coder:3b"), "{text}");
         assert!(text.contains("waiting") && text.contains("5s"), "{text}");
         assert!(!text.contains("loads the model"), "too early for the hint: {text}");
+        assert_eq!(text, "SENT to qwen2.5-coder:3b - waiting for reply... 5s (Esc to cancel)");
     }
 
     #[test]
@@ -115,6 +116,11 @@ mod tests {
         let (status, now) = at(AiPhase::Thinking { model: "m".into() }, 12);
         let text = format_status(&status, now, 0.0, 120);
         assert!(text.contains("loads the model"), "{text}");
+        assert_eq!(
+            text,
+            "SENT to m - waiting for reply... 12s (the first request loads the model) (Esc to \
+             cancel)"
+        );
     }
 
     #[test]

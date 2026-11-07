@@ -58,8 +58,9 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         // An AI error or notice goes away on the next key press, which still reaches its target.
         self.ctx.dismiss_ai_status();
 
-        // Esc cancels a voice recording in progress instead of reaching the shell.
-        if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_recording() {
+        // Esc cancels a voice recording or an AI request in progress instead of reaching the
+        // shell; with nothing in progress it goes through as usual.
+        if key.logical_key == Key::Named(NamedKey::Escape) && crate::voice::cancel_ai() {
             return;
         }
 
