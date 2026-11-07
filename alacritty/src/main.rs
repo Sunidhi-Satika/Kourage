@@ -170,7 +170,11 @@ fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
     log::set_max_level(config.debug.log_level);
 
     // Load the model in the background so the first prompt isn't a cold start.
-    voice::warm_up_llm(&config.ai);
+    if config.ai.warm_up {
+        voice::warm_up_llm(&config.ai);
+    } else {
+        info!("AI model warm-up is disabled by config ([ai] warm_up = false)");
+    }
 
     // Set tty environment variables.
     tty::setup_env();

@@ -41,7 +41,10 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 ### Stage 0 gaps
 
-- [ ] OPEN: warm-up fires unconditionally at startup; consider a config flag to disable it.
+- [x] ~~Warm-up fires unconditionally at startup.~~ Fixed: `[ai] warm_up` (default `true`); `false` skips it and logs `AI model warm-up is disabled by config ([ai] warm_up = false)` (`main.rs`); config parsing is tested (`warm_up_defaults_to_true`, `warm_up_can_be_disabled`).
+
+- [ ] OPEN: Esc targets the most recently started request across all windows; a per-window registry keyed by `WindowId` is a follow-up (Esc in a window with no AI activity can cancel another window's request).
+- [ ] OPEN: overlapping requests in one window are still allowed (no busy guard for text prompts), so a later preview or status can overwrite another request's "Request cancelled." notice.
 
 **Voice and hotkeys:**
 - [x] ~~Float WAV written, read back as `i16`.~~ Fixed: audio now stays in memory, so there's no WAV round-trip.
@@ -64,13 +67,13 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 - No reply-length cap. With temperature 0, `qwen2.5-coder:3b` can fall into a repetition loop: a bare prompt produced 3,700+ tokens of `$6, $7, …` before we killed it. Set `num_predict` (about 128) and a `repeat_penalty`. **Fixed:** requests now send `num_predict: 128`, `repeat_penalty: 1.1` and a `\n\n` stop (`LlmOptions::for_command`, tested).
 - The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test. **Fixed:** `clean_llm_reply` strips fences and backticks (tested).
 - Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt. **Done:** 10 few-shot examples are now in the prompt (`PROMPT_EXAMPLES`, each tested to be a safe single line). Whether they improve answers is unmeasured: that needs the eval set from `docs/stage0-solutions.md`.
-- If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`"). **Fixed:** `ai/diagnostics.rs` maps connection, 404 and HTTP errors to actionable messages (tested).
-- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Showing multi-line replies in the preview is still open.
-- An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar. The blocking 15 s timeout fits small models only.
-- LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up. **Fixed:** the section is now `[ai]`, with `[voice]` still accepted as an alias (tested). No deprecation warning is logged yet.
+- If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`"). **Fixed:** `kourage-core/src/diagnostics.rs` maps connection, 404 and HTTP errors to actionable messages (tested).
+- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Replies are rejected rather than shown: displaying a multi-line reply in the preview is a deliberate non-goal for now, because rejecting is safer.
+- [x] ~~An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar.~~ Fixed: Esc cancels the wait and shows `Request cancelled.` (`wait_or_cancel` and the request-session tests in `voice.rs`); the status line says `(Esc to cancel)` and, after 10 s, `(the first request loads the model)` (`status.rs` tests). The cancelled request keeps running in the background until it answers or times out. Still open: the blocking 15 s timeout fits small models only.
+- LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up. **Fixed:** the section is now `[ai]`, with `[voice]` still accepted as an alias (tested). The deprecation warning is logged at startup (`normalize_legacy_section`, tested; `config/mod.rs` logs it).
 
 **Safety guard holes:**
-- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`ai/safety.rs`, table-tested). Known gaps: `$'…'` quoting, `x=rm; $x -rf ~`, heredocs, and quote-naive raw SQL patterns (`drop table` inside a grep or commit message is flagged).
+- It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`kourage-core/src/safety.rs`, table-tested). Known gaps: `$'…'` quoting, `x=rm; $x -rf ~`, heredocs, and quote-naive raw SQL patterns (`drop table` inside a grep or commit message is flagged).
 - It has false positives: any `-r` substring in an `rm` line (e.g. `rm my-report.txt`). **Fixed:** `rm` is judged by parsed flags, so `rm my-report.txt` is safe.
 - After `to_lowercase()`, the `-R` checks are dead code. **Fixed:** flag checks are case-sensitive now.
 - Needs a table-driven test of dangerous vs safe commands (the roadmap already plans this for Stage 1; it should exist now). **Fixed:** `test_dangerous_command_table` covers about 70 commands.
@@ -78,12 +81,12 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 **Testing and quality:**
 - No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines. **Done:** added tests for audio conversion, WAV encoding, voice cancel, reply cleanup and finalising, LLM error messages, paste and the safety table. The prompt/preview state machines are still lightly tested.
 - No mock LLM backend, so the end-to-end flow can't be tested in CI. **Fixed:** `kourage-core` has a `MockBackend`, and end-to-end tests run `ask` against it with no Ollama (`kourage-core/src/ask.rs`, plus `text_prompt_flow_reaches_preview_event_with_mock` in `voice.rs`).
-- `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed. **Done:** clippy is clean (CI already runs it).
+- `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `kourage-core/src/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed. **Done:** clippy is clean (CI already runs it).
 - Testing tip: `cargo test` doesn't rebuild the app binary. Run `cargo build` before manual testing (a stale March binary cost us a debugging round).
 
 **Docs and first-run:**
 - The README describes the happy path, but there's no troubleshooting section (no mic, no model, Ollama down) and no list of keybindings for the preview (confirm/edit/cancel). **Fixed:** a troubleshooting table was added; the preview keys were already listed.
-- On first run, the terminal should detect what's missing (Ollama, model, Whisper file) and say so once, clearly.
+- [x] ~~On first run, the terminal should detect what's missing (Ollama, model, Whisper file) and say so once, clearly.~~ Fixed: `check_setup` in `kourage-core` (tests in `setup.rs`) and `announce_setup_issues` in `voice.rs` show it once per process on the status line and log each issue as `Setup: ...`. A placeholder Whisper path is only logged (`setup_summary` rule, tested). The on-screen result has not been checked by a person yet (see the owner checklist).
 
 ### Dev environment
 
@@ -99,11 +102,34 @@ TODO for WSL setup (on any Windows machine):
 - [ ] Clone the repo and run `cargo build` and `cargo test -p alacritty`. Install the build deps from `INSTALL.md`, plus `clang`/`libclang` for whisper-rs and `libasound2-dev` for cpal.
 - [ ] Install and check audio tooling: `sudo apt install alsa-utils pulseaudio-utils libasound2-plugins`. Then `pactl list short sources` should show WSLg's `RDPSource`, and `arecord -d 3 -f cd /tmp/t.wav && aplay /tmp/t.wav` should play back your voice. If ALSA finds no device, add an `~/.asoundrc` routing `default` to `pulse`.
 - [ ] Install Ollama **inside WSL**, not on Windows, because WSL can't reach Windows' `localhost` without mirrored networking. Run `ollama pull qwen2.5-coder:3b`, and check that `curl localhost:11434/api/tags` lists it.
-- [ ] Download a Whisper model (e.g. `ggml-base.en.bin`) to `~/.config/alacritty/models/` and point `[voice] whisper_model_path` at it in `~/.config/alacritty/alacritty.toml`.
+- [ ] Download a Whisper model (e.g. `ggml-base.en.bin`) to `~/.config/alacritty/models/` and point `[ai] whisper_model_path` at it in `~/.config/alacritty/alacritty.toml`.
 - [ ] Run `cargo build`, then smoke test with `./target/debug/alacritty -v`: Ctrl+Shift+A opens the prompt, and Ctrl+Shift+S records and transcribes voice. For key debugging, set `[debug] print_events = true` and `persistent_logging = true`, then read `/tmp/Alacritty-<pid>.log`.
 - [ ] Ollama installed without root: download `ollama-linux-amd64.tar.zst` from ollama.com, extract it to `~/.local/ollama`, and run `~/.local/ollama/bin/ollama serve`.
 
-**Exit criteria for Stage 0:** voice works end to end on a stock Ubuntu laptop mic; Ollama-down and model-missing produce helpful messages; multi-line LLM output can't slip through; the safety table test passes; a fresh user can go from clone to first working command using only the README.
+**Exit criteria for Stage 0** (checked 2026-11-07):
+
+| Criterion | Status | Evidence or what is needed |
+| :--- | :--- | :--- |
+| Voice works end to end on a stock Ubuntu laptop mic | OPEN | Pipeline pieces are tested (`to_whisper_input`, `SilenceDetector`, `clean_transcript`, voice cancel). Needs a person with a real mic; see the owner checklist. |
+| Ollama-down gives a helpful message | Met in tests, on-screen check OPEN | `unreachable_server_says_to_start_ollama` (names `ollama serve`) and `missing_model_says_to_pull_it` in `kourage-core/src/diagnostics.rs`; startup check `check_setup_reports_unreachable_backend`. Needs the Ollama-stopped run below. |
+| Model-missing gives a helpful message | Met in tests, on-screen check OPEN | `check_setup_reports_missing_model` (message contains `ollama pull`), 404 case `missing_model_says_to_pull_it` in `kourage-core/src/diagnostics.rs`. |
+| Multi-line LLM output can't slip through | Met | `finalize_reply` tests in `kourage-core/src/reply.rs` (`MultiLine` errors, including the backslash continuation case). |
+| The safety table test passes | Met | `test_dangerous_command_table` and the analyzer tests (`kourage-core/src/safety.rs`) run in `cargo test --workspace`. |
+| A fresh user can go from clone to first working command using only the README | OPEN | README was audited against the code on 2026-11-07, but nobody has run it on a clean machine. |
+
+### Owner checklist to close Stage 0
+
+Only a person at a keyboard and microphone can do these. None is ticked.
+
+- [ ] Voice end to end on a stock laptop mic: Ctrl+Shift+S, speak, preview appears, command is right.
+- [ ] Run with `-vv`, listen to `/tmp/kourage-voice-*.wav`, and tune `SPEECH_RMS_THRESHOLD` and the timings if needed.
+- [ ] Stop Ollama, start the app: confirm the startup notice, then confirm a prompt shows the Ollama-down error.
+- [ ] Press Esc while the status says SENT (Thinking): confirm `Request cancelled.` appears.
+- [ ] Status-line redraw check: no flicker or stale text while LISTENING, SENT, errors and notices (and the 4 redraws a second question above).
+- [ ] Clone-to-first-command run on a clean machine using only the README.
+- [ ] Startup notice, other cases: model not pulled shows the "ollama pull" notice; everything fine (Whisper path left at the placeholder) shows no notice; a request started right away is never covered by the notice.
+- [ ] Esc with nothing in flight still reaches the shell (try it in a shell and in a full-screen program such as vim); two prompts sent quickly, then Esc, cancels the newer one and the older one still delivers its preview.
+- [ ] After pushing, check the GitHub Actions run on Windows and macOS (CI runs `cargo test` and clippy there; the `event.rs` import fix and the `cfg` code paths could only be checked by reading).
 
 ---
 
