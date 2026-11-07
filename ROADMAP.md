@@ -30,7 +30,7 @@ Order matters: each step makes the next one cheaper or more reliable.
    - [x] Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. `keep_alive` (30m) is sent so it stays loaded.
    - [x] `LLM request took` is logged for each request (`run_prompt` in `voice.rs`), and `LLM warm-up finished` for the warm-up.
    - Direct-API measurement (new prompt, about 500 prompt tokens, CPU-only, `qwen2.5-coder:3b`), three different requests in a row: 11.4 s (model not yet loaded), then 2.2 s, then 0.7 s.
-   - [ ] OPEN: re-measure in the real app flow (not yet done; needs an interactive session).
+   - [x] Re-measured in the real app (2026-11-07, from the debug log): warm-up 0.8 s, a text request 3.8 s, a voice request 1.3 s for the model call, down from 14 to 18 s.
    - [ ] OPEN: check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
    - [ ] OPEN, optional: 5 examples instead of 10 (saves about 125 tokens). Try `qwen2.5-coder:1.5b` only after the above, since its answers are worse.
    - Use `-vv` for the voice WAV dump when tuning Whisper (resampling filter, settings), which still mis-hears some speech.
@@ -122,7 +122,7 @@ Exit criteria: terminal behaviour is unchanged, and `kouraged` can be driven fro
 
 Progress:
 - [x] Stage 1, first half (2026-11-07): `kourage-core` extracted (UI-free crate with Backend trait, Ollama + mock backends, `ask()` entry point, golden tests). It lives in the top-level `kourage-core/` directory as a workspace member and holds prompt building, safety analysis, reply cleaning, LLM error messages, `AiContext` and the `Backend` trait. `cargo tree -p kourage-core` shows no `winit`, `alacritty_terminal`, `cpal` or `whisper-rs`. The terminal now calls `kourage_core::ask` from `voice.rs`; Whisper and audio capture stay in the terminal for now. Design: `docs/superpowers/specs/2026-11-07-kourage-core-design.md`.
-- [ ] OPEN: manual smoke test of the extracted flow in the real app (`./target/debug/alacritty -v`, Ollama running; needs an interactive session): the text prompt "show disk usage" shows a preview that can be cancelled; "delete everything here" shows a flagged (destructive) preview; with Ollama stopped, the status line shows the actionable error. Compare the wording with the pre-refactor messages.
+- [ ] OPEN (partly done 2026-11-07): smoke test of the extracted flow in the real app. Seen working in the log: text and voice requests reach the preview, a destructive request (`rm -rf *`) is flagged, a safe one (`du -sh */ | sort -h`) is not, and the key-repeat guard holds. Still to check: with Ollama stopped, the status line shows the actionable error, and Esc cancels a preview.
 - [ ] Note: kourage-core modules are both `pub mod` and re-exported at the crate root; pick one path style before external users.
 - [ ] Second half: the `kouraged` daemon, the CLI, more backends and `kourage.toml`.
 
