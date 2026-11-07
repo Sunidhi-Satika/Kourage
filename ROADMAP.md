@@ -25,18 +25,23 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 Order matters: each step makes the next one cheaper or more reliable.
 
 1. **Prompt speedups (latency).** Measured on the author's CPU-only machine with the real 599-token prompt: reading the prompt costs 11.4 s cold, 3.1 s partly cached and 7.7 s when the context changes; writing the answer costs under 1 s. So the wait is prompt processing, not generation. In the app, a request takes 14 to 18 s today. Planned changes, with measured gains:
-   - Put the fixed text (rules, examples) first and the changing text (environment, terminal output, instruction) last, so Ollama can reuse its cache: about 8.6 s to 4.5 s.
-   - Trim the context: cap the file listing to about 15 names and the terminal output to the last 2 to 3 lines, and include the listing only when the request mentions files: about 4.5 s to 1.6 s.
-   - Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. Send `keep_alive` so it stays loaded.
-   - Optional: 5 examples instead of 10 (saves about 125 tokens). Try `qwen2.5-coder:1.5b` only after the above, since its answers are worse.
-   - Check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
-   - Re-measure afterwards with the real flow, and use `-vv` for the voice WAV dump when tuning Whisper (resampling filter, settings), which still mis-hears some speech.
+   - [x] Put the fixed text (rules, examples) first and the changing text (environment, terminal output, instruction) last, so Ollama can reuse its cache: about 8.6 s to 4.5 s.
+   - [x] Trim the context: cap the file listing to about 15 names and the terminal output to the last 2 to 3 lines, and include the listing only when the request mentions files: about 4.5 s to 1.6 s.
+   - [x] Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. `keep_alive` (30m) is sent so it stays loaded.
+   - [x] `LLM request took` is logged for each request (`run_prompt` in `voice.rs`), and `LLM warm-up finished` for the warm-up.
+   - Direct-API measurement (new prompt, about 500 prompt tokens, CPU-only, `qwen2.5-coder:3b`), three different requests in a row: 11.4 s (model not yet loaded), then 2.2 s, then 0.7 s.
+   - [x] Re-measured in the real app (2026-11-07, from the debug log): warm-up 0.8 s, a text request 3.8 s, a voice request 1.3 s for the model call, down from 14 to 18 s.
+   - [ ] OPEN: check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
+   - [ ] OPEN, optional: 5 examples instead of 10 (saves about 125 tokens). Try `qwen2.5-coder:1.5b` only after the above, since its answers are worse.
+   - Use `-vv` for the voice WAV dump when tuning Whisper (resampling filter, settings), which still mis-hears some speech.
 2. **Shell hook.** Bash/zsh/fish snippets that record each command, its exit code and where its output starts and ends. Screen scraping cannot tell where the last command ended. This is the Stage 2 shell integration, pulled forward because step 3 needs it.
 3. **Error diagnosis and fix (hotkey).** After a failed command, send the command and its error output to the model and show a one-line explanation plus a proposed fix in the existing preview (still confirm-to-run, still safety-checked). Expect weaker answers from a 3B model, and keep prompts short for latency.
 
 Later, once there is real data: collect accepted and rejected commands (opt-in, local only), build a roughly 100-case eval set, then consider fine-tuning a small model. A tuned model could drop most of the long prompt, which is itself a latency win. Writing our own model from scratch is out of scope.
 
 ### Stage 0 gaps
+
+- [ ] OPEN: warm-up fires unconditionally at startup; consider a config flag to disable it.
 
 **Voice and hotkeys:**
 - [x] ~~Float WAV written, read back as `i16`.~~ Fixed: audio now stays in memory, so there's no WAV round-trip.
@@ -72,7 +77,7 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 **Testing and quality:**
 - No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines. **Done:** added tests for audio conversion, WAV encoding, voice cancel, reply cleanup and finalising, LLM error messages, paste and the safety table. The prompt/preview state machines are still lightly tested.
-- No mock LLM backend, so the end-to-end flow can't be tested in CI.
+- No mock LLM backend, so the end-to-end flow can't be tested in CI. **Fixed:** `kourage-core` has a `MockBackend`, and end-to-end tests run `ask` against it with no Ollama (`kourage-core/src/ask.rs`, plus `text_prompt_flow_reaches_preview_event_with_mock` in `voice.rs`).
 - `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed. **Done:** clippy is clean (CI already runs it).
 - Testing tip: `cargo test` doesn't rebuild the app binary. Run `cargo build` before manual testing (a stale March binary cost us a debugging round).
 
@@ -114,6 +119,12 @@ Goal: split AI logic from terminal UI so the terminal becomes a thin client.
 - Tests: unit tests for the safety classifier (a table of dangerous vs safe commands) and for context extraction, plus a mock backend for integration tests.
 
 Exit criteria: terminal behaviour is unchanged, and `kouraged` can be driven from a plain CLI (`kourage ask "..."`) with no terminal running.
+
+Progress:
+- [x] Stage 1, first half (2026-11-07): `kourage-core` extracted (UI-free crate with Backend trait, Ollama + mock backends, `ask()` entry point, golden tests). It lives in the top-level `kourage-core/` directory as a workspace member and holds prompt building, safety analysis, reply cleaning, LLM error messages, `AiContext` and the `Backend` trait. `cargo tree -p kourage-core` shows no `winit`, `alacritty_terminal`, `cpal` or `whisper-rs`. The terminal now calls `kourage_core::ask` from `voice.rs`; Whisper and audio capture stay in the terminal for now. Design: `docs/superpowers/specs/2026-11-07-kourage-core-design.md`.
+- [ ] OPEN (partly done 2026-11-07): smoke test of the extracted flow in the real app. Seen working in the log: text and voice requests reach the preview, a destructive request (`rm -rf *`) is flagged, a safe one (`du -sh */ | sort -h`) is not, and the key-repeat guard holds. Still to check: with Ollama stopped, the status line shows the actionable error, and Esc cancels a preview.
+- [ ] Note: kourage-core modules are both `pub mod` and re-exported at the crate root; pick one path style before external users.
+- [ ] Second half: the `kouraged` daemon, the CLI, more backends and `kourage.toml`.
 
 ## Stage 2: A genuinely useful terminal agent
 

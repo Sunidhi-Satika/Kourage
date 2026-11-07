@@ -75,7 +75,7 @@ kourage-core/
 trait Backend: Send + Sync {
     fn generate(&self, request: &GenerateRequest) -> Result<String, BackendError>;
     fn warm_up(&self, prefix: &str) -> Result<(), BackendError>;   // default: no-op
-    fn name(&self) -> &str;            // for status text ("model: …")
+    fn model(&self) -> &str;           // model name, for status text ("model: …")
 }
 ```
 `GenerateRequest` holds the prompt and generation options (temperature, max tokens, repeat penalty, stop sequences). `BackendError` distinguishes timeout, connection failure, HTTP status with body, and malformed response, so `diagnostics` can keep producing the same messages. A second implementation (llama.cpp in-process, remote) must fit without changing the trait; that is the test of the shape.
@@ -99,12 +99,13 @@ trait Backend: Send + Sync {
 
 ## Decisions made after the builder check (my calls, please check these)
 1. **Baseline and golden reference.** Step 1 is "done" when the latency work is committed, the in-app latency is re-measured, and `ROADMAP.md` records the numbers. The golden tests (prompt text, Ollama request body) are written only after that commit and pin the post-step-1 behaviour. The test baseline is the 170 tests passing on that commit (verified green on the current tree on 2026-11-07).
-2. **CI exists.** `.github/workflows/ci.yml` runs clippy and builds on Windows and macOS (plus Linux). The end-to-end mock tests run in the existing test job, so no new CI job is needed. Keeping the new crate building on all three is part of done.
+2. **CI exists.** `.github/workflows/ci.yml` runs `cargo test` and clippy on Windows and macOS (not Linux; Linux is checked locally). The end-to-end mock tests run in the existing workspace `cargo test`, so no new CI job is needed. Keeping the new crate building on all three is part of done.
 3. **No cancellation.** Today an in-flight request cannot be cancelled (the roadmap lists this as open) and the only limit is the timeout. So `Backend::generate` is blocking and takes its timeout from `LlmSettings`. Cancellation is a non-goal here; adding it later means a trait change, which is acceptable because it is a new feature.
 4. **Structured errors.** `AskError` is an enum (empty reply, multi-line reply, backend failure, and so on). Its `Display` is exactly today's user-facing message, so the terminal shows the same text but can branch on the kind.
 5. **Context is plain data.** `AiContext` stays a plain struct and `ask` takes only the context and instruction, so mock tests are deterministic. `Platform` is used by a separate gathering function (`AiContext::gather(cwd, &dyn Platform, ...)`), called by the terminal. `ask` does no filesystem or process probing.
 6. **Other OSes.** The macOS and Windows `Platform` implementations must compile and return the same strings as today (`"macOS (Unix)"`, `"Windows"`). I can only test Linux here, so CI is the check for the others.
 7. **Layout.** The crate is a top-level `kourage-core/` directory and a workspace member. The root `Cargo.toml` edit and a lockfile change are accepted; the patch to upstream files stays small.
+8. **Accepted deviations in the built code.** `ReplyError`/`AskError` use a `MultiLine(usize)` tuple variant (the message embeds the line count). `BackendError` has a fifth variant, `Transport`, so non-connect transport errors keep today's text. `LlmSettings.temperature` is the configured default; the per-request `GenerateOptions.temperature` wins. The trait method is `model()`, not `name()`.
 
 ## Left to the builder
 File and type names, error-type derive crate (`thiserror` or hand-written), exact `GenerateRequest` field shape, how `warm_up` is scheduled (thread stays in the terminal or moves to core), whether `AiContext` fields stay `pub`.

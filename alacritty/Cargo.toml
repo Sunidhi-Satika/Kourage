@@ -14,6 +14,9 @@ rust-version.workspace = true
 path = "../alacritty_terminal"
 version = "0.25.2-dev"
 
+[dependencies.kourage-core]
+path = "../kourage-core"
+
 [dependencies.alacritty_config_derive]
 path = "../alacritty_config_derive"
 version = "0.2.6-dev"
@@ -24,7 +27,6 @@ version = "0.2.4-dev"
 
 [dependencies]
 whisper-rs = { version = "0.15.1" }
-reqwest = { version = "0.11", features = ["blocking", "json"] }
 anyhow = "1.0"
 ahash = { version = "0.8.6", features = ["no-rng"] }
 bitflags = "2.2.1"
