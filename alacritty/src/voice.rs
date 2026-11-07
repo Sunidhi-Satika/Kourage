@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -74,44 +74,23 @@ impl VoiceSession {
 
 static VOICE_SESSION: VoiceSession = VoiceSession::new();
 
-/// Cancel the recording in progress, if any. Returns whether there was one to cancel.
-pub fn cancel_recording() -> bool {
-    VOICE_SESSION.request_cancel()
-}
+/// The request is waiting for the model.
+const REQUEST_IN_FLIGHT: u8 = 0;
+/// The user cancelled the request; its worker has not noticed yet.
+const REQUEST_CANCELLED: u8 = 1;
+/// The request's worker is done with it.
+const REQUEST_ENDED: u8 = 2;
 
-/// No AI request is waiting for the model.
-const REQUEST_IDLE: u8 = 0;
-/// A request is waiting for the model.
-const REQUEST_IN_FLIGHT: u8 = 1;
-/// The user cancelled the request; the worker has not noticed yet.
-const REQUEST_CANCELLED: u8 = 2;
-
-/// Tracks whether an AI request is waiting for the model and whether the user cancelled it.
+/// The state of one AI request.
 ///
-/// One atomic state, so a cancel and the end of a request cannot interleave: either the cancel
-/// lands first and [`Self::end`] reports it, or the request ended first and the cancel is refused.
-struct AiRequestSession {
-    state: AtomicU8,
-}
+/// One atomic per request, so a cancel and the end of that request cannot interleave: either the
+/// cancel lands first and [`Self::end`] reports it, or the request ended first and the cancel is
+/// refused. Requests never touch each other's state.
+struct RequestState(AtomicU8);
 
-impl AiRequestSession {
-    const fn new() -> Self {
-        Self { state: AtomicU8::new(REQUEST_IDLE) }
-    }
-
-    /// Start a request, forgetting any cancel left over from an earlier one.
-    fn begin(&self) {
-        self.state.store(REQUEST_IN_FLIGHT, Ordering::SeqCst);
-    }
-
-    /// End the request. Returns whether it was cancelled before it ended.
-    fn end(&self) -> bool {
-        self.state.swap(REQUEST_IDLE, Ordering::SeqCst) == REQUEST_CANCELLED
-    }
-
-    /// Ask the waiting worker to give up on its request. Only succeeds while one is in flight.
-    fn request_cancel(&self) -> bool {
-        self.state
+impl RequestState {
+    fn cancel(&self) -> bool {
+        self.0
             .compare_exchange(
                 REQUEST_IN_FLIGHT,
                 REQUEST_CANCELLED,
@@ -121,49 +100,101 @@ impl AiRequestSession {
             .is_ok()
     }
 
+    /// Returns whether the request was cancelled before it ended.
+    fn end(&self) -> bool {
+        self.0.swap(REQUEST_ENDED, Ordering::SeqCst) == REQUEST_CANCELLED
+    }
+
     fn is_cancelled(&self) -> bool {
-        self.state.load(Ordering::SeqCst) == REQUEST_CANCELLED
+        self.0.load(Ordering::SeqCst) == REQUEST_CANCELLED
     }
 }
 
-static AI_REQUEST_SESSION: AiRequestSession = AiRequestSession::new();
+/// The AI requests currently waiting for the model, oldest first.
+struct AiRequests {
+    next_id: AtomicU64,
+    in_flight: Mutex<Vec<(u64, Arc<RequestState>)>>,
+}
 
-/// Begins a request on creation and ends it when finished or dropped, so no exit path (early
-/// return, panic) can leave a request marked in flight and Esc swallowed forever.
-struct RequestGuard {
-    session: &'static AiRequestSession,
+impl AiRequests {
+    const fn new() -> Self {
+        Self { next_id: AtomicU64::new(0), in_flight: Mutex::new(Vec::new()) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Arc<RequestState>)>> {
+        self.in_flight.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Start a new request with its own cancel state.
+    fn begin(&self) -> RequestToken<'_> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let state = Arc::new(RequestState(AtomicU8::new(REQUEST_IN_FLIGHT)));
+        self.lock().push((id, state.clone()));
+        RequestToken { requests: self, id, state, active: true }
+    }
+
+    /// Cancel the most recently started request (the one the status line shows). Returns
+    /// whether that cancel was accepted; an older request is never cancelled instead.
+    fn cancel_latest(&self) -> bool {
+        self.lock().last().is_some_and(|(_, state)| state.cancel())
+    }
+
+    fn remove(&self, id: u64) {
+        self.lock().retain(|(entry, _)| *entry != id);
+    }
+}
+
+static AI_REQUESTS: AiRequests = AiRequests::new();
+
+/// One request's handle: cancelled only through its own state, and removed from the registry
+/// when finished or dropped, so no exit path (early return, panic) can leave it in flight and
+/// Esc swallowed forever.
+struct RequestToken<'a> {
+    requests: &'a AiRequests,
+    id: u64,
+    state: Arc<RequestState>,
     active: bool,
 }
 
-impl RequestGuard {
-    fn begin(session: &'static AiRequestSession) -> Self {
-        session.begin();
-        Self { session, active: true }
-    }
-
+impl RequestToken<'_> {
     fn is_cancelled(&self) -> bool {
-        self.session.is_cancelled()
+        self.state.is_cancelled()
     }
 
-    /// End the request now. Returns whether the user cancelled it before it ended.
+    /// End this request now. Returns whether the user cancelled it before it ended.
     fn finish(mut self) -> bool {
-        self.active = false;
-        self.session.end()
+        self.end()
+    }
+
+    fn end(&mut self) -> bool {
+        if !std::mem::replace(&mut self.active, false) {
+            return false;
+        }
+        self.requests.remove(self.id);
+        self.state.end()
     }
 }
 
-impl Drop for RequestGuard {
+impl Drop for RequestToken<'_> {
     fn drop(&mut self) {
-        if self.active {
-            self.session.end();
-        }
+        self.end();
     }
+}
+
+/// Cancel the recording in `voice` if one is in progress, otherwise the latest request in
+/// `requests`. Returns whether anything was cancelled.
+fn cancel_in(voice: &VoiceSession, requests: &AiRequests) -> bool {
+    voice.request_cancel() || requests.cancel_latest()
 }
 
 /// Cancel what the AI is doing for the user: the recording if one is in progress, otherwise
-/// the request waiting for the model. Returns whether anything was cancelled.
+/// the most recently started request waiting for the model. Returns whether anything was
+/// cancelled.
+///
+/// Requests are tracked process-wide, not per window: with requests running in two windows,
+/// Esc in either window cancels the most recent one.
 pub fn cancel_ai() -> bool {
-    cancel_recording() || AI_REQUEST_SESSION.request_cancel()
+    cancel_in(&VOICE_SESSION, &AI_REQUESTS)
 }
 
 /// How often a waiting worker checks whether the user cancelled.
@@ -688,12 +719,50 @@ fn run_prompt(
     Ok(proposal)
 }
 
+/// Shown when a request's helper thread ended without an answer and nobody cancelled it.
+const REQUEST_STOPPED_MESSAGE: &str =
+    "LLM command generation failed: the request stopped unexpectedly. See the log.";
+
+/// How a request ended, from its worker's point of view.
+#[derive(Debug, PartialEq, Eq)]
+enum RequestOutcome {
+    /// The user cancelled this request; nothing else may be shown for it.
+    Cancelled,
+    Preview(Proposal),
+    Failed(String),
+}
+
+/// Decide what a finished request shows. An accepted cancel always wins, even over an answer
+/// that arrived at the same moment, so no preview ever appears after "Request cancelled.".
+fn request_outcome(answer: Option<Result<Proposal, String>>, cancelled: bool) -> RequestOutcome {
+    match answer {
+        _ if cancelled => RequestOutcome::Cancelled,
+        Some(Ok(proposal)) => RequestOutcome::Preview(proposal),
+        Some(Err(message)) => RequestOutcome::Failed(message),
+        None => RequestOutcome::Failed(REQUEST_STOPPED_MESSAGE.into()),
+    }
+}
+
+/// Run `work` on a helper thread and wait for it until `request` is cancelled.
+///
+/// A cancelled request is abandoned: its helper thread ends by itself (for the model, within the
+/// configured timeout) and its late answer is dropped, because nobody receives it any more.
+fn run_request(
+    request: RequestToken<'_>,
+    work: impl FnOnce() -> Result<Proposal, String> + Send + 'static,
+) -> RequestOutcome {
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+
+    let answer = wait_or_cancel(&rx, &|| request.is_cancelled());
+    drop(rx);
+    request_outcome(answer, request.finish())
+}
+
 /// Run `instruction` against the configured Ollama server. On success, sends the preview event;
 /// on error, calls `reporter.fail`; when the user cancels `request` (Esc), shows a notice.
-///
-/// The blocking request runs on a helper thread so Esc can stop the wait at once. A cancelled
-/// request is abandoned: it ends by itself within the configured timeout, and its late answer
-/// is dropped because nobody receives it any more.
 fn propose_command(
     instruction: String,
     context: AiContext,
@@ -701,32 +770,19 @@ fn propose_command(
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
     reporter: &StatusReporter,
-    request: RequestGuard,
+    request: RequestToken<'_>,
 ) {
     let backend = OllamaBackend::new(llm_settings(voice_config));
     let temperature = voice_config.temperature;
-    let (tx, rx) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(run_prompt(&backend, &instruction, &context, temperature));
-    });
+    let work = move || run_prompt(&backend, &instruction, &context, temperature);
 
-    let answer = wait_or_cancel(&rx, &|| request.is_cancelled());
-    drop(rx);
-    // A cancel that was accepted always wins, even over an answer that arrived meanwhile.
-    let cancelled = request.finish();
-
-    match answer {
-        _ if cancelled => {
+    match run_request(request, work) {
+        RequestOutcome::Cancelled => {
             info!("AI request cancelled");
             reporter.show(AiPhase::Notice("Request cancelled.".into()));
         },
-        Some(Ok(proposal)) => send_preview(proxy, window_id, reporter, proposal),
-        Some(Err(message)) => reporter.fail(message),
-        None => {
-            let message = "LLM command generation failed: the request stopped unexpectedly. See \
-                           the log.";
-            reporter.fail(message.into());
-        },
+        RequestOutcome::Preview(proposal) => send_preview(proxy, window_id, reporter, proposal),
+        RequestOutcome::Failed(message) => reporter.fail(message),
     }
 }
 
@@ -799,7 +855,7 @@ pub fn handle_voice_command(
         info!("Transcribed text: {}", transcribed_text);
 
         // Stage 3: LLM command inference
-        let request = RequestGuard::begin(&AI_REQUEST_SESSION);
+        let request = AI_REQUESTS.begin();
         reporter.show(AiPhase::Thinking { model: voice_config.model.clone() });
         propose_command(
             transcribed_text,
@@ -824,7 +880,7 @@ pub fn handle_text_prompt(
     let reporter = StatusReporter::start(proxy, window_id);
     // Shown before the thread starts so the user sees "sent" immediately; Esc can cancel from
     // the moment it is shown.
-    let request = RequestGuard::begin(&AI_REQUEST_SESSION);
+    let request = AI_REQUESTS.begin();
     reporter.show(AiPhase::Thinking { model: voice_config.model.clone() });
     let proxy = proxy.clone();
 
@@ -1135,21 +1191,72 @@ mod tests {
         assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
     }
 
+    fn proposal(command: &str) -> Proposal {
+        Proposal { command: command.into(), is_destructive: false }
+    }
+
     #[test]
     fn late_result_after_cancel_is_dropped() {
-        let (tx, rx) = std::sync::mpsc::channel::<u32>();
-        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
-        let producer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(150));
-            // The waiter is gone; the send fails and the value is dropped.
-            let delivered = tx.send(7).is_ok();
-            let _ = sent_tx.send(delivered);
-        });
+        let requests = AiRequests::new();
+        let request = requests.begin();
+        assert!(requests.cancel_latest());
 
-        assert_eq!(wait_or_cancel(&rx, &|| true), None);
-        drop(rx);
-        producer.join().expect("producer must not panic");
-        assert!(!sent_rx.recv().unwrap(), "the late answer must not be received by anyone");
+        // The real waiting path: the answer only exists after the caller has given up.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let outcome = run_request(request, move || {
+            thread::sleep(Duration::from_millis(150));
+            let _ = done_tx.send(());
+            Ok(proposal("late"))
+        });
+        assert_eq!(outcome, RequestOutcome::Cancelled);
+        assert!(started.elapsed() < Duration::from_millis(150), "must not wait for the answer");
+
+        // The abandoned producer finishes later without panicking; its answer reached no one.
+        done_rx.recv_timeout(Duration::from_secs(2)).expect("producer finished");
+        assert!(!requests.cancel_latest(), "the cancelled request left the registry");
+    }
+
+    #[test]
+    fn request_answer_becomes_a_preview_or_an_error() {
+        let requests = AiRequests::new();
+        assert_eq!(
+            run_request(requests.begin(), || Ok(proposal("ls"))),
+            RequestOutcome::Preview(proposal("ls"))
+        );
+        assert_eq!(
+            run_request(requests.begin(), || Err("boom".into())),
+            RequestOutcome::Failed("boom".into())
+        );
+    }
+
+    #[test]
+    fn request_that_dies_without_answer_is_an_error_not_a_cancel() {
+        let requests = AiRequests::new();
+        let outcome = run_request(requests.begin(), || panic!("helper thread died"));
+        assert_eq!(outcome, RequestOutcome::Failed(REQUEST_STOPPED_MESSAGE.into()));
+    }
+
+    #[test]
+    fn accepted_cancel_wins_over_an_answer_that_is_already_there() {
+        // Decision level: every answer loses to an accepted cancel.
+        assert_eq!(request_outcome(Some(Ok(proposal("ls"))), true), RequestOutcome::Cancelled);
+        assert_eq!(request_outcome(Some(Err("e".into())), true), RequestOutcome::Cancelled);
+        assert_eq!(request_outcome(None, true), RequestOutcome::Cancelled);
+        assert_eq!(
+            request_outcome(Some(Ok(proposal("ls"))), false),
+            RequestOutcome::Preview(proposal("ls"))
+        );
+        assert_eq!(
+            request_outcome(None, false),
+            RequestOutcome::Failed(REQUEST_STOPPED_MESSAGE.into())
+        );
+
+        // Waiting-function level: the answer is ready at once, but Esc was accepted first.
+        let requests = AiRequests::new();
+        let request = requests.begin();
+        assert!(requests.cancel_latest());
+        assert_eq!(run_request(request, || Ok(proposal("ls"))), RequestOutcome::Cancelled);
     }
 
     #[test]
@@ -1161,71 +1268,185 @@ mod tests {
 
     #[test]
     fn cancel_without_request_returns_false() {
-        let session = AiRequestSession::new();
-        assert!(!session.request_cancel());
-        assert!(!session.is_cancelled());
+        let requests = AiRequests::new();
+        assert!(!requests.cancel_latest());
     }
 
     #[test]
     fn cancel_during_request_is_seen() {
-        let session = AiRequestSession::new();
-        session.begin();
-        assert!(session.request_cancel());
-        assert!(session.is_cancelled());
+        let requests = AiRequests::new();
+        let request = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(request.is_cancelled());
     }
 
     #[test]
     fn cancel_after_end_returns_false() {
-        let session = AiRequestSession::new();
-        session.begin();
-        session.end();
-        assert!(!session.request_cancel());
+        let requests = AiRequests::new();
+        let request = requests.begin();
+        assert!(!request.finish());
+        assert!(!requests.cancel_latest());
     }
 
     #[test]
     fn begin_clears_previous_cancel() {
-        let session = AiRequestSession::new();
-        session.begin();
-        assert!(session.request_cancel());
-        session.end();
-        session.begin();
-        assert!(!session.is_cancelled());
+        let requests = AiRequests::new();
+        let first = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(first.finish());
+        let second = requests.begin();
+        assert!(!second.is_cancelled());
     }
 
     #[test]
-    fn end_reports_whether_the_request_was_cancelled() {
-        let session = AiRequestSession::new();
-        session.begin();
-        assert!(!session.end(), "answer arrived first: not cancelled");
-        session.begin();
-        assert!(session.request_cancel());
-        assert!(session.end(), "an accepted cancel must win over a late answer");
-        assert!(!session.request_cancel(), "Esc twice: the second is refused");
+    fn finish_reports_whether_the_request_was_cancelled() {
+        let requests = AiRequests::new();
+        assert!(!requests.begin().finish(), "answer arrived first: not cancelled");
+        let request = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(!requests.cancel_latest(), "Esc twice: the second is refused");
+        assert!(request.finish(), "an accepted cancel must win over a late answer");
     }
 
     #[test]
-    fn request_guard_ends_the_session_when_dropped() {
-        static SESSION: AiRequestSession = AiRequestSession::new();
+    fn cancelling_request_b_does_not_end_request_a_state() {
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(b.is_cancelled());
+        assert!(!a.is_cancelled());
+        // A is still in flight and cancellable once B is gone.
+        assert!(b.finish());
+        assert!(requests.cancel_latest());
+        assert!(a.finish());
+    }
 
-        fn returns_early(session: &'static AiRequestSession) -> Option<()> {
-            let _guard = RequestGuard::begin(session);
-            assert!(session.request_cancel(), "in flight while the guard lives");
+    #[test]
+    fn request_a_ending_does_not_make_request_b_uncancellable() {
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        assert!(!a.finish());
+        assert!(requests.cancel_latest());
+        assert!(b.is_cancelled());
+        assert!(b.finish());
+    }
+
+    #[test]
+    fn cancel_targets_the_most_recent_request() {
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        let c = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(c.is_cancelled());
+        assert!(!a.is_cancelled() && !b.is_cancelled());
+        // Ending the middle one does not change which request is the latest.
+        assert!(!b.finish());
+        assert!(!requests.cancel_latest(), "the latest is already cancelled");
+        assert!(!a.is_cancelled());
+        assert!(c.finish());
+        assert!(!a.finish());
+    }
+
+    #[test]
+    fn old_request_finishing_cannot_claim_new_requests_cancel() {
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(!a.finish(), "A must not claim B's cancel");
+        assert!(b.is_cancelled(), "B still sees its cancel after A finished");
+        assert!(b.finish());
+    }
+
+    #[test]
+    fn each_request_reports_only_its_own_cancel() {
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        assert!(requests.cancel_latest());
+        assert!(b.finish());
+        let c = requests.begin();
+        assert!(!c.is_cancelled());
+        assert!(!c.finish());
+        assert!(requests.cancel_latest(), "A is the latest again");
+        assert!(a.finish());
+    }
+
+    #[test]
+    fn overlapping_requests_cancelled_b_never_delivers_a_preview() {
+        // Interleaving (a): A and B in flight, Esc cancels B, A finishes first.
+        let requests = AiRequests::new();
+        let a = requests.begin();
+        let b = requests.begin();
+        assert!(requests.cancel_latest());
+
+        assert_eq!(run_request(a, || Ok(proposal("a"))), RequestOutcome::Preview(proposal("a")));
+        assert_eq!(run_request(b, || Ok(proposal("b"))), RequestOutcome::Cancelled);
+    }
+
+    #[test]
+    fn cancel_prefers_the_recording_over_a_request() {
+        let voice = VoiceSession::new();
+        let requests = AiRequests::new();
+        let request = requests.begin();
+        voice.begin_recording();
+
+        assert!(cancel_in(&voice, &requests));
+        assert!(voice.is_cancelled());
+        assert!(!request.is_cancelled(), "the recording is cancelled, not the request");
+
+        voice.end_recording();
+        assert!(cancel_in(&voice, &requests), "with no recording, the request is cancelled");
+        assert!(request.finish());
+    }
+
+    #[test]
+    fn cancel_with_nothing_in_flight_returns_false() {
+        assert!(!cancel_in(&VoiceSession::new(), &AiRequests::new()));
+    }
+
+    #[test]
+    fn cancel_after_recording_and_request_end_returns_false() {
+        let voice = VoiceSession::new();
+        let requests = AiRequests::new();
+        voice.begin_recording();
+        let request = requests.begin();
+        voice.end_recording();
+        assert!(!request.finish());
+        assert!(!cancel_in(&voice, &requests));
+    }
+
+    #[test]
+    fn request_token_leaves_the_registry_when_dropped() {
+        fn returns_early(requests: &AiRequests) -> Option<()> {
+            let _request = requests.begin();
             None?;
             Some(())
         }
 
-        drop(RequestGuard::begin(&SESSION));
-        assert!(!SESSION.request_cancel());
+        let requests = AiRequests::new();
+        drop(requests.begin());
+        assert!(!requests.cancel_latest());
 
-        assert_eq!(returns_early(&SESSION), None);
-        assert!(!SESSION.request_cancel(), "early return must not leave a request in flight");
+        assert_eq!(returns_early(&requests), None);
+        assert!(!requests.cancel_latest(), "early return must not leave a request in flight");
 
-        let panicked = std::panic::catch_unwind(|| {
-            let _guard = RequestGuard::begin(&SESSION);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _request = requests.begin();
             panic!("worker panicked");
-        });
+        }));
         assert!(panicked.is_err());
-        assert!(!SESSION.request_cancel(), "a panic must not leave a request in flight");
+        assert!(!requests.cancel_latest(), "a panic must not leave a request in flight");
+
+        // Dropping an old token removes only its own entry.
+        let a = requests.begin();
+        let b = requests.begin();
+        drop(a);
+        assert!(requests.cancel_latest());
+        assert!(b.finish());
     }
 
     #[test]
