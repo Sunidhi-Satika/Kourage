@@ -41,7 +41,7 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 ### Stage 0 gaps
 
-- [ ] OPEN: warm-up fires unconditionally at startup; consider a config flag to disable it.
+- [x] ~~Warm-up fires unconditionally at startup.~~ Fixed: `[ai] warm_up` (default `true`); `false` skips it and logs `AI model warm-up is disabled by config ([ai] warm_up = false)` (`main.rs`); config parsing is tested (`warm_up_defaults_to_true`, `warm_up_can_be_disabled`).
 
 **Voice and hotkeys:**
 - [x] ~~Float WAV written, read back as `i16`.~~ Fixed: audio now stays in memory, so there's no WAV round-trip.
@@ -65,9 +65,9 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 - The model ignores "no code fences" and wraps replies in ```` ```bash ````. Fence stripping is required, and needs a test. **Fixed:** `clean_llm_reply` strips fences and backticks (tested).
 - Answer quality at 3B is shaky: "list hidden files sorted by modification time" gave `ls -la | grep ^. | sort -k6`. The preview is essential; consider few-shot examples in the prompt. **Done:** 10 few-shot examples are now in the prompt (`PROMPT_EXAMPLES`, each tested to be a safe single line). Whether they improve answers is unmeasured: that needs the eval set from `docs/stage0-solutions.md`.
 - If Ollama isn't running or the model isn't pulled, the user sees an opaque "failed to parse response" error. Add a health check and actionable messages ("run `ollama pull qwen2.5-coder:3b`"). **Fixed:** `ai/diagnostics.rs` maps connection, 404 and HTTP errors to actionable messages (tested).
-- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Showing multi-line replies in the preview is still open.
-- An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar. The blocking 15 s timeout fits small models only.
-- LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up. **Fixed:** the section is now `[ai]`, with `[voice]` still accepted as an alias (tested). No deprecation warning is logged yet.
+- The single-line output isn't enforced. A multi-line reply gets written to the PTY with embedded newlines, so several commands run on one confirm. Reject or collapse multi-line output and show it explicitly in the preview. **Fixed:** `require_single_line` rejects multi-line replies with a clear message (tested). Replies are rejected rather than shown: displaying a multi-line reply in the preview is a deliberate non-goal for now, because rejecting is safer.
+- [x] ~~An in-flight request can't be cancelled, and there's no "thinking" indicator beyond the message bar.~~ Fixed: Esc cancels the wait and shows `Request cancelled.` (`wait_or_cancel` and the request-session tests in `voice.rs`); the status line says `(Esc to cancel)` and, after 10 s, `(the first request loads the model)` (`status.rs` tests). The cancelled request keeps running in the background until it answers or times out. Still open: the blocking 15 s timeout fits small models only.
+- LLM settings live under `[voice]` even though the text prompt uses them too. Rename to `[ai]` (with a migration) before more config piles up. **Fixed:** the section is now `[ai]`, with `[voice]` still accepted as an alias (tested). The deprecation warning is logged at startup (`normalize_legacy_section`, tested; `config/mod.rs` logs it).
 
 **Safety guard holes:**
 - It misses common dangers: `sudo …`, `curl … | sh`, `find … -delete`, `mv` onto system paths, `> file` truncation, `chmod -R 777 ~`, `kill -9 -1`, and `rm` behind `xargs` or `;`/`&&` chains. **Fixed:** a tokenizer-based analyzer now flags all of these (`ai/safety.rs`, table-tested). Known gaps: `$'…'` quoting, `x=rm; $x -rf ~`, heredocs, and quote-naive raw SQL patterns (`drop table` inside a grep or commit message is flagged).
@@ -83,7 +83,7 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 **Docs and first-run:**
 - The README describes the happy path, but there's no troubleshooting section (no mic, no model, Ollama down) and no list of keybindings for the preview (confirm/edit/cancel). **Fixed:** a troubleshooting table was added; the preview keys were already listed.
-- On first run, the terminal should detect what's missing (Ollama, model, Whisper file) and say so once, clearly.
+- [x] ~~On first run, the terminal should detect what's missing (Ollama, model, Whisper file) and say so once, clearly.~~ Fixed: `check_setup` in `kourage-core` (tests in `setup.rs`) and `announce_setup_issues` in `voice.rs` show it once per process on the status line and log each issue as `Setup: ...`. A placeholder Whisper path is only logged (`setup_summary` rule, tested). The on-screen result has not been checked by a person yet (see the owner checklist).
 
 ### Dev environment
 
@@ -103,7 +103,27 @@ TODO for WSL setup (on any Windows machine):
 - [ ] Run `cargo build`, then smoke test with `./target/debug/alacritty -v`: Ctrl+Shift+A opens the prompt, and Ctrl+Shift+S records and transcribes voice. For key debugging, set `[debug] print_events = true` and `persistent_logging = true`, then read `/tmp/Alacritty-<pid>.log`.
 - [ ] Ollama installed without root: download `ollama-linux-amd64.tar.zst` from ollama.com, extract it to `~/.local/ollama`, and run `~/.local/ollama/bin/ollama serve`.
 
-**Exit criteria for Stage 0:** voice works end to end on a stock Ubuntu laptop mic; Ollama-down and model-missing produce helpful messages; multi-line LLM output can't slip through; the safety table test passes; a fresh user can go from clone to first working command using only the README.
+**Exit criteria for Stage 0** (checked 2026-11-07):
+
+| Criterion | Status | Evidence or what is needed |
+| :--- | :--- | :--- |
+| Voice works end to end on a stock Ubuntu laptop mic | OPEN | Pipeline pieces are tested (`to_whisper_input`, `SilenceDetector`, `clean_transcript`, voice cancel). Needs a person with a real mic; see the owner checklist. |
+| Ollama-down gives a helpful message | Met in tests, on-screen check OPEN | `llm_failure_message` tests in `kourage-core/src/diagnostics.rs` (names `ollama serve`); startup check `check_setup_reports_unreachable_backend`. Needs the Ollama-stopped run below. |
+| Model-missing gives a helpful message | Met in tests, on-screen check OPEN | `check_setup_reports_missing_model` (message contains `ollama pull`), 404 case in `diagnostics.rs`. |
+| Multi-line LLM output can't slip through | Met | `finalize_reply` tests in `kourage-core/src/reply.rs` (`MultiLine` errors, including the backslash continuation case). |
+| The safety table test passes | Met | `test_dangerous_command_table` and the analyzer tests (`ai/safety.rs`, `kourage-core/src/safety.rs`) run in `cargo test --workspace`. |
+| A fresh user can go from clone to first working command using only the README | OPEN | README was audited against the code on 2026-11-07, but nobody has run it on a clean machine. |
+
+### Owner checklist to close Stage 0
+
+Only a person at a keyboard and microphone can do these. None is ticked.
+
+- [ ] Voice end to end on a stock laptop mic: Ctrl+Shift+S, speak, preview appears, command is right.
+- [ ] Run with `-vv`, listen to `/tmp/kourage-voice-*.wav`, and tune `SPEECH_RMS_THRESHOLD` and the timings if needed.
+- [ ] Stop Ollama, start the app: confirm the startup notice, then confirm a prompt shows the Ollama-down error.
+- [ ] Press Esc while the status says SENT (Thinking): confirm `Request cancelled.` appears.
+- [ ] Status-line redraw check: no flicker or stale text while LISTENING, SENT, errors and notices (and the 4 redraws a second question above).
+- [ ] Clone-to-first-command run on a clean machine using only the README.
 
 ---
 

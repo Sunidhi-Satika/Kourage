@@ -37,7 +37,9 @@ Just like the legendary Attic Computer from *Courage the Cowardly Dog* that alwa
 - 🧠 **Local LLM Intent Parsing**: Automatically turns natural language into valid shell commands (`ls -lat`) using local models like `qwen2.5-coder` or `llama3`.
 - 🔇 **Smart RMS Silence Detection**: Automatically detects when you stop speaking and begins transcription with zero manual cutoffs.
 - ⚡ **Pure High-Performance Rust**: Non-blocking asynchronous worker threads ensure that voice and LLM processing never freeze Alacritty's 60+ FPS GPU render loop.
-- 👀 **Always-Visible Status**: One line on the last terminal row shows *listening* (with a live mic meter), *transcribing*, *sent to the model, waiting* and any error, each with a seconds counter.
+- 👀 **Always-Visible Status**: One line on the last terminal row shows *listening* (with a live mic meter), *transcribing*, *sent to the model, waiting* and any error. The first three carry a seconds counter.
+- ✋ **Cancel Anytime**: `Esc` stops a recording or a request that is waiting for the model.
+- 🩺 **Setup Check at Startup**: Kourage tells you once, in the status line, if Ollama isn't running, the model isn't pulled, or your Whisper file is missing.
 - 🛡️ **Preview & Safety Guard**: Nothing runs until you confirm. Risky commands (`rm -rf`, `sudo`, `curl | sh`, `git reset --hard`, anything that ends your shell...) are flagged as `DANGER`.
 - 🔒 **Safe & Offline**: No API keys, no subscriptions, and no internet connection required.
 
@@ -69,11 +71,11 @@ Just like the legendary Attic Computer from *Courage the Cowardly Dog* that alwa
 
 ### 1. Prerequisites
 
-Make sure the native system audio and build tools are installed:
+Install a Rust toolchain ([rustup.rs](https://rustup.rs)) and the native audio and build tools. `cmake` through `python3` are the build dependencies from [INSTALL.md](INSTALL.md) (which also lists other distributions); `libasound2-dev` is for the microphone and `libclang-dev` for the Whisper bindings:
 
 ```bash
 # Ubuntu / Debian
-sudo apt install -y libasound2-dev libopenblas-dev libclang-dev cmake pkg-config fontconfig
+sudo apt install -y libasound2-dev libclang-dev cmake g++ pkg-config libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev python3
 ```
 
 ### 2. Download a Local Whisper Model (Optional for Voice)
@@ -90,7 +92,8 @@ wget -O ~/.config/alacritty/models/ggml-tiny.bin https://huggingface.co/ggergano
 Make sure [Ollama](https://ollama.com) is installed and running:
 
 ```bash
-ollama run qwen2.5-coder:3b # or: ollama run llama3
+ollama pull qwen2.5-coder:3b   # or: ollama pull llama3
+ollama serve                   # skip if Ollama already runs as a service
 ```
 
 ### 4. Configure Alacritty
@@ -121,23 +124,27 @@ cargo run --release --bin alacritty
 - Press **`Ctrl+Shift+A`** to open the AI prompt bar and type any command!
 - Press **`Ctrl+Shift+S`** to speak your command!
 
+The first build takes a while (it compiles Whisper). If Ollama is not running, the model is not pulled, or the Whisper file is missing, the status line says so shortly after the window opens (see [Troubleshooting](#-troubleshooting)). `[ai] warm_up = true` loads the model in the background at startup so your first prompt is not slow.
+
 ---
 
 ## ⌨️ Default Keybindings
 
 | Keybinding | Action | Description |
 | :--- | :--- | :--- |
-| `Ctrl + Shift + A` | `ToggleAiPrompt` | Opens/closes inline natural language AI prompt bar (`🤖 AI: `) |
+| `Ctrl + Shift + A` | `ToggleAiPrompt` | Opens/closes inline natural language AI prompt bar (`AI: `) |
 | `Ctrl + Shift + S` | `VoiceCommand` | Starts microphone recording and executes transcribed AI command |
 | `Esc` (while recording) | Cancel voice | Stops the microphone and discards the recording |
+| `Esc` (while the status says SENT) | Cancel request | Stops waiting for the model and shows `Request cancelled.` The request itself keeps running in the background until Ollama answers or the timeout passes; its answer is dropped |
 | `Ctrl + Shift + V` (in prompt) | Paste | Pastes into the prompt; line breaks become spaces |
 | `Enter` (in prompt) | `AiPromptConfirm` | Submits prompt to LLM for shell command generation |
 | `Esc` (in prompt) | `AiPromptCancel` | Cancels and closes prompt overlay |
 | `Up` / `Down` (in prompt) | History Nav | Cycles through previous AI prompt history |
 | `Ctrl + W` (in prompt) | `AiPromptDeleteWord` | Deletes previous word in prompt |
+| `Ctrl + U` or `Ctrl + C` (in prompt) | Cancel prompt | Closes the prompt overlay |
 | `Enter` (in preview) | `AiPreviewConfirm` | **Execute** previewed command immediately into shell |
 | `Tab` (in preview) | `AiPreviewEdit` | **Paste into terminal prompt** for manual editing before running |
-| `Esc` (in preview) | `AiPreviewCancel` | **Dismiss** preview without running anything |
+| `Esc` or `Ctrl + C` (in preview) | `AiPreviewCancel` | **Dismiss** preview without running anything (any other key also dismisses it) |
 | `Ctrl + Shift + +` | `IncreaseFontSize` | Increase terminal font size |
 | `Ctrl + Shift + -` | `DecreaseFontSize` | Decrease terminal font size |
 
@@ -150,26 +157,31 @@ While the AI works, one line on the last terminal row always says what is happen
 ```
 LISTENING [####------] 4s  speak now - Esc: cancel
 TRANSCRIBING speech... 2s
-SENT to qwen2.5-coder:3b - waiting for reply... 5s
+SENT to qwen2.5-coder:3b - waiting for reply... 5s (Esc to cancel)
 PREVIEW: df -h [Enter: Run | Tab: Edit | Esc: Cancel]
 ERROR: Can't reach the AI server ...  (press any key)
 ```
 
-The `#` meter moves with your voice; if it stays empty while you speak, the microphone is not hearing you. Errors and notices stay until you press a key (the key still goes through).
+After 10 seconds the SENT line adds `(the first request loads the model)`. The `#` meter moves with your voice; if it stays empty while you speak, the microphone is not hearing you. Errors and notices (for example `Request cancelled.` or the startup setup notice) stay until you press a key (the key still goes through). Long lines are cut with `...` to fit the window width.
 
 ---
 
 ## 🩺 Troubleshooting
 
-Run `./target/debug/alacritty -v` to see log output. Kourage's own messages tell you what to fix; the usual ones:
+**Startup notice.** Shortly after the first window opens, Kourage checks Ollama, the model and the Whisper file once per run, logs every problem and shows the first one on the status line (with `(+N more, see the log)` if there are others). The notice is skipped if the status line is already busy. A Whisper path that is still the placeholder is only logged, so text-only users are not nagged. The messages are the same as the rows below.
+
+Run `./target/release/alacritty -v` (or `cargo run --release --bin alacritty -- -v`) to see log output; the same messages are logged as `Setup: ...` warnings at startup. Kourage's own messages tell you what to fix; the usual ones:
 
 | Message | Cause and fix |
 | :--- | :--- |
 | `Can't reach the AI server at …` | Ollama isn't running. Start it with `ollama serve` (install it inside WSL if you use WSL, not on Windows). Check with `curl localhost:11434/api/tags`. |
 | `The model "…" isn't installed` | Run `ollama pull qwen2.5-coder:3b` (or the model named in `[ai] model`). |
 | `The AI server … did not answer within …s` | The model is still loading, or the machine is slow. Try again, or raise `[ai] timeout_secs`. |
-| `The model returned N lines but a single command is required` | The model ignored the one-line rule. Rephrase the request. |
-| `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[ai] whisper_model_path`. |
+| `Request cancelled.` | You pressed `Esc` while the status said SENT. Nothing was run. |
+| `The model returned N lines but a single command is required` | The model ignored the one-line rule. Kourage rejects such replies instead of running them. Rephrase the request. |
+| `The model returned an empty command` | The reply was empty. Rephrase the request. |
+| `Voice input is not set up: [ai] whisper_model_path … is still the placeholder` | Only in the log, never on the status line. Set `[ai] whisper_model_path` to a downloaded model (step 2) to use voice. |
+| `Whisper model not found at …` | Download a model such as `ggml-base.en.bin` and set `[ai] whisper_model_path` to its path. Also shown at startup if the configured file does not exist. |
 | `No audio input device found` / ALSA errors | No microphone is visible. On WSL2, install `alsa-utils pulseaudio-utils libasound2-plugins` and check `pactl list short sources`. |
 | `No speech heard (loudest input level …)` | The microphone did not pick you up. Watch the `#` meter while the status says LISTENING: if it stays empty, speak closer or check the input device (`pactl list short sources`). To hear what was recorded, run with `-vv` and play `/tmp/kourage-voice-<pid>-<time>.wav`. |
 | `Heard sound but no words were recognised` | Whisper could not make out words (noise, or speech too short). Try again; a larger Whisper model such as `ggml-small.en.bin` is more accurate. |
