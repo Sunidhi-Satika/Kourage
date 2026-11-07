@@ -119,6 +119,20 @@ mod tests {
     }
 
     #[test]
+    fn check_setup_reports_missing_model_when_installed_list_is_empty() {
+        let file = temp_file("empty-model-list");
+        let backend = MockBackend::with_models(&[]);
+        let issues = check_setup(&backend, file.to_str().unwrap());
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        match &issues[0] {
+            SetupIssue::ModelMissing { model, message } => {
+                assert!(message.contains(&format!("ollama pull {model}")), "{message}");
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn check_setup_ok_when_model_present_and_whisper_exists() {
         let file = temp_file("ok");
         let backend = MockBackend::with_models(&["mock:latest"]);

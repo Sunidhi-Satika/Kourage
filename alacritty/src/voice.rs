@@ -170,8 +170,11 @@ impl RequestToken<'_> {
         if !std::mem::replace(&mut self.active, false) {
             return false;
         }
+        // Swap the state first: while it is still registered but ended, `cancel_latest`
+        // refuses instead of skipping it and cancelling an older request.
+        let cancelled = self.state.end();
         self.requests.remove(self.id);
-        self.state.end()
+        cancelled
     }
 }
 
@@ -1331,6 +1334,22 @@ mod tests {
         assert!(requests.cancel_latest());
         assert!(b.is_cancelled());
         assert!(b.finish());
+    }
+
+    #[test]
+    fn ended_but_registered_request_shields_older_ones() {
+        let requests = AiRequests::new();
+        let older = requests.begin();
+        let newer = requests.begin();
+
+        // The state `end` passes through: ended, not yet removed from the registry.
+        assert!(!newer.state.end());
+        assert!(!requests.cancel_latest(), "an ended latest request must not expose the older");
+        assert!(!older.is_cancelled());
+
+        assert!(!newer.finish());
+        assert!(requests.cancel_latest(), "once removed, the older request is the latest");
+        assert!(older.finish());
     }
 
     #[test]

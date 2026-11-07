@@ -47,8 +47,7 @@ use alacritty_terminal::vte::ansi::NamedColor;
 use crate::ai::{AiPhase, AiStatus};
 #[cfg(unix)]
 use crate::cli::IpcConfig;
-use crate::cli::ParsedOptions;
-use crate::cli::{Options as CliOptions, WindowOptions};
+use crate::cli::{Options as CliOptions, ParsedOptions, WindowOptions};
 use crate::clipboard::Clipboard;
 use crate::config::ui_config::{HintAction, HintInternalAction};
 use crate::config::{self, UiConfig};
