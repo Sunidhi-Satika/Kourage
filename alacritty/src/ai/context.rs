@@ -308,6 +308,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn golden_prompt_rust_project() {
+        let context = AiContext {
+            cwd: Some("/home/u/proj".to_string()),
+            directory_contents: (1..=20).map(|i| format!("file{i:02}.rs")).collect(),
+            detected_stack: Some("Rust (Cargo), Git Repository".to_string()),
+            shell: Some("bash".to_string()),
+            os: Some("Ubuntu 24.04 (Linux)".to_string()),
+            recent_terminal_lines: Some(
+                (1..=5).map(|i| format!("terminal line {i}")).collect::<Vec<_>>().join("\n"),
+            ),
+        };
+        assert_eq!(
+            context.format_prompt("show the biggest files here"),
+            include_str!("golden/prompt_rust_files.txt")
+        );
+    }
+
+    #[test]
+    fn golden_prompt_empty_context() {
+        assert_eq!(
+            AiContext::default().format_prompt("what is my ip address"),
+            include_str!("golden/prompt_empty_context.txt")
+        );
+    }
+
+    #[test]
     fn test_detect_tech_stack() {
         let rust_contents = vec!["Cargo.toml".to_string(), "src/".to_string(), ".git/".to_string()];
         let stack = AiContext::detect_tech_stack(Path::new("."), &rust_contents);

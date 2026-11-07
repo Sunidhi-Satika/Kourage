@@ -750,6 +750,29 @@ mod tests {
 
     const CHUNK: Duration = Duration::from_millis(10);
 
+    fn golden_request(options: LlmOptions) -> String {
+        let request = LlmRequest {
+            model: "qwen2.5-coder:3b".to_string(),
+            prompt: "P".to_string(),
+            stream: false,
+            keep_alive: "30m",
+            options: Some(options),
+        };
+        serde_json::to_string(&request).unwrap()
+    }
+
+    #[test]
+    fn golden_request_body_command() {
+        let fixture = include_str!("ai/golden/request_command.json");
+        assert_eq!(golden_request(LlmOptions::for_command(0.0)), fixture.trim_end_matches('\n'));
+    }
+
+    #[test]
+    fn golden_request_body_warm_up() {
+        let fixture = include_str!("ai/golden/request_warm_up.json");
+        assert_eq!(golden_request(LlmOptions::for_warm_up()), fixture.trim_end_matches('\n'));
+    }
+
     #[test]
     fn whisper_input_passes_16k_mono_through() {
         let samples = vec![0.1, -0.2, 0.3];
