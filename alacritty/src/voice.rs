@@ -5,13 +5,15 @@ use std::thread;
 use std::time::Duration;
 
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
 use winit::event_loop::EventLoopProxy;
 use winit::window::WindowId;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+use kourage_core::{Backend, GenerateOptions, GenerateRequest, LlmSettings, OllamaBackend};
+
+use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
 use crate::config::ui_config::UiConfig;
 use crate::config::voice::Voice;
 use crate::event::{Event, EventType};
@@ -489,73 +491,24 @@ fn write_debug_wav(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
     options.open(path)?.write_all(bytes)
 }
 
-#[derive(Serialize)]
-struct LlmOptions {
-    temperature: f32,
-    /// Hard cap on generated tokens; a command never needs more.
-    num_predict: u32,
-    /// Discourages the repetition loops small models fall into.
-    repeat_penalty: f32,
-    stop: Vec<&'static str>,
-}
-
-impl LlmOptions {
-    fn for_command(temperature: f32) -> Self {
-        Self { temperature, num_predict: 128, repeat_penalty: 1.1, stop: vec!["\n\n"] }
-    }
-
-    /// Options for the startup warm-up: process the prompt, generate (almost) nothing.
-    fn for_warm_up() -> Self {
-        Self { temperature: 0.0, num_predict: 1, repeat_penalty: 1.1, stop: vec!["\n\n"] }
+fn llm_settings(voice_config: &Voice) -> LlmSettings {
+    LlmSettings {
+        api_url: voice_config.llm_api_url.clone(),
+        model: voice_config.model.clone(),
+        temperature: voice_config.temperature,
+        timeout_secs: voice_config.timeout_secs,
     }
 }
-
-/// How long Ollama keeps the model loaded after a request (its default is only 5 minutes).
-const MODEL_KEEP_ALIVE: &str = "30m";
-
-#[derive(Serialize)]
-struct LlmRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-    keep_alive: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<LlmOptions>,
-}
-
-#[derive(Deserialize)]
-struct LlmResponse {
-    response: String,
-}
-
-use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
 
 /// Load the model and prime Ollama's prompt cache in the background, so the first real request
 /// skips the ~11 s cold start. Failures are only logged: Ollama may simply not be running yet.
 pub fn warm_up_llm(voice_config: &Voice) {
-    let config = voice_config.clone();
+    let backend = OllamaBackend::new(llm_settings(voice_config));
     thread::spawn(move || {
-        let request = LlmRequest {
-            model: config.model.clone(),
-            // The fixed prompt prefix is what Ollama caches between requests.
-            prompt: AiContext::default().format_prompt(""),
-            stream: false,
-            keep_alive: MODEL_KEEP_ALIVE,
-            options: Some(LlmOptions::for_warm_up()),
-        };
         let started = std::time::Instant::now();
-        let client = match reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs.max(60)))
-            .build()
-        {
-            Ok(client) => client,
-            Err(err) => return info!("LLM warm-up skipped: {err}"),
-        };
-        match client.post(&config.llm_api_url).json(&request).send() {
-            Ok(res) if res.status().is_success() => {
-                info!("LLM warm-up finished in {:.1}s", started.elapsed().as_secs_f32())
-            },
-            Ok(res) => info!("LLM warm-up got HTTP {}", res.status()),
+        // The fixed prompt prefix is what Ollama caches between requests.
+        match backend.warm_up(&AiContext::default().format_prompt("")) {
+            Ok(()) => info!("LLM warm-up finished in {:.1}s", started.elapsed().as_secs_f32()),
             Err(err) => info!("LLM warm-up skipped: {err}"),
         }
     });
@@ -566,58 +519,17 @@ fn call_llm(
     context: &AiContext,
     voice_config: &Voice,
 ) -> Result<String, anyhow::Error> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(voice_config.timeout_secs))
-        .build()?;
-
-    let prompt = context.format_prompt(instruction);
-
-    let request = LlmRequest {
-        model: voice_config.model.clone(),
-        prompt,
-        stream: false,
-        keep_alive: MODEL_KEEP_ALIVE,
-        options: Some(LlmOptions::for_command(voice_config.temperature)),
+    let backend = OllamaBackend::new(llm_settings(voice_config));
+    let request = GenerateRequest {
+        prompt: context.format_prompt(instruction),
+        options: GenerateOptions::for_command(voice_config.temperature),
     };
 
-    let url = &voice_config.llm_api_url;
     let started = std::time::Instant::now();
-    let response = client.post(url).json(&request).send().map_err(|e| {
-        if e.is_timeout() {
-            anyhow::anyhow!(
-                "The AI server at {url} did not answer within {}s (the model may still be \
-                 loading; try again).",
-                voice_config.timeout_secs
-            )
-        } else {
-            anyhow::anyhow!(diagnostics::llm_failure_message(
-                url,
-                &voice_config.model,
-                None,
-                &e.to_string(),
-                e.is_connect()
-            ))
-        }
-    })?;
+    let reply = backend.generate(&request);
     info!("LLM request took {:.1}s", started.elapsed().as_secs_f32());
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().unwrap_or_default();
-        return Err(anyhow::anyhow!(diagnostics::llm_failure_message(
-            url,
-            &voice_config.model,
-            Some(status.as_u16()),
-            &body,
-            false
-        )));
-    }
-
-    let res = response
-        .json::<LlmResponse>()
-        .map_err(|e| anyhow::anyhow!("Unexpected response from {url}: {e}"))?;
-
-    crate::ai::finalize_llm_reply(&res.response).map_err(|msg| anyhow::anyhow!(msg))
+    crate::ai::finalize_llm_reply(&reply?).map_err(|msg| anyhow::anyhow!(msg))
 }
 
 pub fn handle_voice_command(
@@ -750,29 +662,6 @@ mod tests {
 
     const CHUNK: Duration = Duration::from_millis(10);
 
-    fn golden_request(options: LlmOptions) -> String {
-        let request = LlmRequest {
-            model: "qwen2.5-coder:3b".to_string(),
-            prompt: "P".to_string(),
-            stream: false,
-            keep_alive: "30m",
-            options: Some(options),
-        };
-        serde_json::to_string(&request).unwrap()
-    }
-
-    #[test]
-    fn golden_request_body_command() {
-        let fixture = include_str!("ai/golden/request_command.json");
-        assert_eq!(golden_request(LlmOptions::for_command(0.0)), fixture.trim_end_matches('\n'));
-    }
-
-    #[test]
-    fn golden_request_body_warm_up() {
-        let fixture = include_str!("ai/golden/request_warm_up.json");
-        assert_eq!(golden_request(LlmOptions::for_warm_up()), fixture.trim_end_matches('\n'));
-    }
-
     #[test]
     fn whisper_input_passes_16k_mono_through() {
         let samples = vec![0.1, -0.2, 0.3];
@@ -886,29 +775,6 @@ mod tests {
         }
         assert!(write_debug_wav(&path, b"xyz").is_err());
         std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn llm_request_options_cap_length_and_repetition() {
-        let json = serde_json::to_value(LlmOptions::for_command(0.0)).unwrap();
-        assert_eq!(json["num_predict"], 128);
-        assert!((json["repeat_penalty"].as_f64().unwrap() - 1.1).abs() < 1e-6);
-        assert_eq!(json["stop"], serde_json::json!(["\n\n"]));
-        assert_eq!(json["temperature"], 0.0);
-    }
-
-    #[test]
-    fn llm_request_keeps_the_model_loaded() {
-        let request = LlmRequest {
-            model: "m".into(),
-            prompt: "p".into(),
-            stream: false,
-            keep_alive: MODEL_KEEP_ALIVE,
-            options: Some(LlmOptions::for_warm_up()),
-        };
-        let json = serde_json::to_value(request).unwrap();
-        assert_eq!(json["keep_alive"], "30m");
-        assert_eq!(json["options"]["num_predict"], 1);
     }
 
     #[test]

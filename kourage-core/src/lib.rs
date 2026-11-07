@@ -1,5 +1,6 @@
 //! UI-free core of the Kourage AI terminal.
 
+pub mod backend;
 pub mod context;
 pub mod diagnostics;
 pub mod platform;
@@ -7,6 +8,10 @@ pub mod prompt;
 pub mod reply;
 pub mod safety;
 
+pub use backend::{
+    Backend, BackendError, GenerateOptions, GenerateRequest, LlmSettings, MockBackend,
+    OllamaBackend,
+};
 pub use context::AiContext;
 pub use diagnostics::{llm_failure_message, whisper_missing_message};
 pub use platform::{Platform, SystemPlatform};
