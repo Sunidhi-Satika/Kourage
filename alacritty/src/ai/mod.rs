@@ -4,7 +4,5 @@ pub mod context;
 pub mod status;
 
 pub use kourage_core::diagnostics;
-pub use kourage_core::{
-    AiContext, clean_llm_reply, finalize_llm_reply, is_destructive_command, require_single_line,
-};
+pub use kourage_core::AiContext;
 pub use status::{AiPhase, AiStatus};

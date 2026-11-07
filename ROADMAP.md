@@ -28,7 +28,7 @@ Order matters: each step makes the next one cheaper or more reliable.
    - [x] Put the fixed text (rules, examples) first and the changing text (environment, terminal output, instruction) last, so Ollama can reuse its cache: about 8.6 s to 4.5 s.
    - [x] Trim the context: cap the file listing to about 15 names and the terminal output to the last 2 to 3 lines, and include the listing only when the request mentions files: about 4.5 s to 1.6 s.
    - [x] Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. `keep_alive` (30m) is sent so it stays loaded.
-   - [x] `LLM request took` is logged for each request (`call_llm`), and `LLM warm-up finished` for the warm-up.
+   - [x] `LLM request took` is logged for each request (`run_prompt` in `voice.rs`), and `LLM warm-up finished` for the warm-up.
    - Direct-API measurement (new prompt, about 500 prompt tokens, CPU-only, `qwen2.5-coder:3b`), three different requests in a row: 11.4 s (model not yet loaded), then 2.2 s, then 0.7 s.
    - [ ] OPEN: re-measure in the real app flow (not yet done; needs an interactive session).
    - [ ] OPEN: check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
@@ -75,7 +75,7 @@ Later, once there is real data: collect accepted and rejected commands (opt-in, 
 
 **Testing and quality:**
 - No tests for the voice pipeline (WAV round-trip would have caught the bug above), LLM response parsing (code-fence stripping, empty and multi-line replies), or the prompt/preview state machines. **Done:** added tests for audio conversion, WAV encoding, voice cancel, reply cleanup and finalising, LLM error messages, paste and the safety table. The prompt/preview state machines are still lightly tested.
-- No mock LLM backend, so the end-to-end flow can't be tested in CI.
+- No mock LLM backend, so the end-to-end flow can't be tested in CI. **Fixed:** `kourage-core` has a `MockBackend`, and end-to-end tests run `ask` against it with no Ollama (`kourage-core/src/ask.rs`, plus `text_prompt_flow_reaches_preview_event_with_mock` in `voice.rs`).
 - `cargo clippy --all-targets` reports 10 errors from earlier Kourage code (`ai/context.rs`, `ai/safety.rs`, `display/mod.rs`, `window_context.rs`, `event.rs` tests). CI will fail until they're fixed. **Done:** clippy is clean (CI already runs it).
 - Testing tip: `cargo test` doesn't rebuild the app binary. Run `cargo build` before manual testing (a stale March binary cost us a debugging round).
 
@@ -117,6 +117,11 @@ Goal: split AI logic from terminal UI so the terminal becomes a thin client.
 - Tests: unit tests for the safety classifier (a table of dangerous vs safe commands) and for context extraction, plus a mock backend for integration tests.
 
 Exit criteria: terminal behaviour is unchanged, and `kouraged` can be driven from a plain CLI (`kourage ask "..."`) with no terminal running.
+
+Progress:
+- [x] Stage 1, first half (2026-11-07): `kourage-core` extracted (UI-free crate with Backend trait, Ollama + mock backends, `ask()` entry point, golden tests). It lives in the top-level `kourage-core/` directory as a workspace member and holds prompt building, safety analysis, reply cleaning, LLM error messages, `AiContext` and the `Backend` trait. `cargo tree -p kourage-core` shows no `winit`, `alacritty_terminal`, `cpal` or `whisper-rs`. The terminal now calls `kourage_core::ask` from `voice.rs`; Whisper and audio capture stay in the terminal for now. Design: `docs/superpowers/specs/2026-11-07-kourage-core-design.md`.
+- [ ] OPEN: manual smoke test of the extracted flow in the real app (`./target/debug/alacritty -v`, Ollama running; needs an interactive session): the text prompt "show disk usage" shows a preview that can be cancelled; "delete everything here" shows a flagged (destructive) preview; with Ollama stopped, the status line shows the actionable error. Compare the wording with the pre-refactor messages.
+- [ ] Second half: the `kouraged` daemon, the CLI, more backends and `kourage.toml`.
 
 ## Stage 2: A genuinely useful terminal agent
 

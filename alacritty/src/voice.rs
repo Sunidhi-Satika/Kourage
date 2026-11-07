@@ -11,13 +11,12 @@ use winit::window::WindowId;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use kourage_core::{Backend, GenerateOptions, GenerateRequest, LlmSettings, OllamaBackend};
+use kourage_core::{ask, Backend, LlmSettings, OllamaBackend, Proposal};
 
 use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
 use crate::config::ui_config::UiConfig;
 use crate::config::voice::Voice;
 use crate::event::{Event, EventType};
-
 
 /// Held while a voice session runs; a second session is refused until it is dropped.
 struct BusyGuard(&'static AtomicBool);
@@ -514,22 +513,36 @@ pub fn warm_up_llm(voice_config: &Voice) {
     });
 }
 
-fn call_llm(
+/// Ask `backend` for a command. The error is the text shown in the status line.
+fn run_prompt(
+    backend: &dyn Backend,
+    instruction: &str,
+    context: &AiContext,
+    temperature: f32,
+) -> Result<Proposal, String> {
+    let started = std::time::Instant::now();
+    let result = ask(backend, context, instruction, temperature);
+    info!("LLM request took {:.1}s", started.elapsed().as_secs_f32());
+
+    let proposal = result.map_err(|e| format!("LLM command generation failed: {e}"))?;
+    info!("Command from LLM: {}", proposal.command);
+    Ok(proposal)
+}
+
+/// Run `instruction` against the configured Ollama server and show the preview or the error.
+fn propose_command(
     instruction: &str,
     context: &AiContext,
     voice_config: &Voice,
-) -> Result<String, anyhow::Error> {
+    proxy: &EventLoopProxy<Event>,
+    window_id: WindowId,
+    reporter: &StatusReporter,
+) {
     let backend = OllamaBackend::new(llm_settings(voice_config));
-    let request = GenerateRequest {
-        prompt: context.format_prompt(instruction),
-        options: GenerateOptions::for_command(voice_config.temperature),
-    };
-
-    let started = std::time::Instant::now();
-    let reply = backend.generate(&request);
-    info!("LLM request took {:.1}s", started.elapsed().as_secs_f32());
-
-    crate::ai::finalize_llm_reply(&reply?).map_err(|msg| anyhow::anyhow!(msg))
+    match run_prompt(&backend, instruction, context, voice_config.temperature) {
+        Ok(proposal) => send_preview(proxy, window_id, reporter, proposal),
+        Err(message) => reporter.fail(message),
+    }
 }
 
 pub fn handle_voice_command(
@@ -602,17 +615,7 @@ pub fn handle_voice_command(
 
         // Stage 3: LLM command inference
         reporter.show(AiPhase::Thinking { model: voice_config.model.clone() });
-
-        let command_from_llm = match call_llm(&transcribed_text, &context, &voice_config) {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                reporter.fail(format!("LLM command generation failed: {e}"));
-                return;
-            },
-        };
-
-        info!("Command from LLM: {}", command_from_llm);
-        send_preview(&proxy, window_id, &reporter, command_from_llm);
+        propose_command(&transcribed_text, &context, &voice_config, &proxy, window_id, &reporter);
     });
 }
 
@@ -630,16 +633,7 @@ pub fn handle_text_prompt(
     let proxy = proxy.clone();
 
     thread::spawn(move || {
-        let command_from_llm = match call_llm(&prompt_text, &context, &voice_config) {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                reporter.fail(format!("LLM command generation failed: {e}"));
-                return;
-            },
-        };
-
-        info!("Command from LLM: {}", command_from_llm);
-        send_preview(&proxy, window_id, &reporter, command_from_llm);
+        propose_command(&prompt_text, &context, &voice_config, &proxy, window_id, &reporter);
     });
 }
 
@@ -648,10 +642,10 @@ fn send_preview(
     proxy: &EventLoopProxy<Event>,
     window_id: WindowId,
     reporter: &StatusReporter,
-    command: String,
+    proposal: Proposal,
 ) {
     reporter.clear();
-    let is_destructive = crate::ai::is_destructive_command(&command);
+    let Proposal { command, is_destructive } = proposal;
     let event = Event::new(EventType::AiPreview { command, is_destructive }, window_id);
     let _ = proxy.send_event(event);
 }
@@ -660,7 +654,40 @@ fn send_preview(
 mod tests {
     use super::*;
 
+    use kourage_core::{BackendError, MockBackend};
+
     const CHUNK: Duration = Duration::from_millis(10);
+
+    fn prompt_with(backend: &MockBackend) -> Result<Proposal, String> {
+        run_prompt(backend, "do it", &AiContext::default(), 0.1)
+    }
+
+    #[test]
+    fn text_prompt_flow_reaches_preview_event_with_mock() {
+        let safe = prompt_with(&MockBackend::replying(&["`du -sh .`"])).unwrap();
+        assert_eq!(safe, Proposal { command: "du -sh .".into(), is_destructive: false });
+
+        let destructive = prompt_with(&MockBackend::replying(&["rm -rf ~"])).unwrap();
+        assert_eq!(destructive, Proposal { command: "rm -rf ~".into(), is_destructive: true });
+
+        let error =
+            BackendError::Timeout { url: "http://localhost:11434".into(), timeout_secs: 15 };
+        let failed = prompt_with(&MockBackend::failing(error.clone())).unwrap_err();
+        assert_eq!(failed, format!("LLM command generation failed: {error}"));
+    }
+
+    #[test]
+    fn text_prompt_flow_reports_bad_replies_with_existing_wording() {
+        assert_eq!(
+            prompt_with(&MockBackend::replying(&["ls\nrm -rf /"])).unwrap_err(),
+            "LLM command generation failed: The model returned 2 lines but a single command is \
+             required. Try rephrasing."
+        );
+        assert_eq!(
+            prompt_with(&MockBackend::replying(&["  "])).unwrap_err(),
+            "LLM command generation failed: The model returned an empty command. Try rephrasing."
+        );
+    }
 
     #[test]
     fn whisper_input_passes_16k_mono_through() {
