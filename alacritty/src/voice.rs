@@ -503,13 +503,22 @@ impl LlmOptions {
     fn for_command(temperature: f32) -> Self {
         Self { temperature, num_predict: 128, repeat_penalty: 1.1, stop: vec!["\n\n"] }
     }
+
+    /// Options for the startup warm-up: process the prompt, generate (almost) nothing.
+    fn for_warm_up() -> Self {
+        Self { temperature: 0.0, num_predict: 1, repeat_penalty: 1.1, stop: vec!["\n\n"] }
+    }
 }
+
+/// How long Ollama keeps the model loaded after a request (its default is only 5 minutes).
+const MODEL_KEEP_ALIVE: &str = "30m";
 
 #[derive(Serialize)]
 struct LlmRequest {
     model: String,
     prompt: String,
     stream: bool,
+    keep_alive: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<LlmOptions>,
 }
@@ -520,6 +529,37 @@ struct LlmResponse {
 }
 
 use crate::ai::{diagnostics, AiContext, AiPhase, AiStatus};
+
+/// Load the model and prime Ollama's prompt cache in the background, so the first real request
+/// skips the ~11 s cold start. Failures are only logged: Ollama may simply not be running yet.
+pub fn warm_up_llm(voice_config: &Voice) {
+    let config = voice_config.clone();
+    thread::spawn(move || {
+        let request = LlmRequest {
+            model: config.model.clone(),
+            // The fixed prompt prefix is what Ollama caches between requests.
+            prompt: AiContext::default().format_prompt(""),
+            stream: false,
+            keep_alive: MODEL_KEEP_ALIVE,
+            options: Some(LlmOptions::for_warm_up()),
+        };
+        let started = std::time::Instant::now();
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs.max(60)))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => return info!("LLM warm-up skipped: {err}"),
+        };
+        match client.post(&config.llm_api_url).json(&request).send() {
+            Ok(res) if res.status().is_success() => {
+                info!("LLM warm-up finished in {:.1}s", started.elapsed().as_secs_f32())
+            },
+            Ok(res) => info!("LLM warm-up got HTTP {}", res.status()),
+            Err(err) => info!("LLM warm-up skipped: {err}"),
+        }
+    });
+}
 
 fn call_llm(
     instruction: &str,
@@ -536,10 +576,12 @@ fn call_llm(
         model: voice_config.model.clone(),
         prompt,
         stream: false,
+        keep_alive: MODEL_KEEP_ALIVE,
         options: Some(LlmOptions::for_command(voice_config.temperature)),
     };
 
     let url = &voice_config.llm_api_url;
+    let started = std::time::Instant::now();
     let response = client.post(url).json(&request).send().map_err(|e| {
         if e.is_timeout() {
             anyhow::anyhow!(
@@ -557,6 +599,7 @@ fn call_llm(
             ))
         }
     })?;
+    info!("LLM request took {:.1}s", started.elapsed().as_secs_f32());
 
     let status = response.status();
     if !status.is_success() {
@@ -829,6 +872,20 @@ mod tests {
         assert!((json["repeat_penalty"].as_f64().unwrap() - 1.1).abs() < 1e-6);
         assert_eq!(json["stop"], serde_json::json!(["\n\n"]));
         assert_eq!(json["temperature"], 0.0);
+    }
+
+    #[test]
+    fn llm_request_keeps_the_model_loaded() {
+        let request = LlmRequest {
+            model: "m".into(),
+            prompt: "p".into(),
+            stream: false,
+            keep_alive: MODEL_KEEP_ALIVE,
+            options: Some(LlmOptions::for_warm_up()),
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["keep_alive"], "30m");
+        assert_eq!(json["options"]["num_predict"], 1);
     }
 
     #[test]

@@ -25,12 +25,15 @@ The architectural problem (everything wired into `event.rs`, `display/mod.rs`, `
 Order matters: each step makes the next one cheaper or more reliable.
 
 1. **Prompt speedups (latency).** Measured on the author's CPU-only machine with the real 599-token prompt: reading the prompt costs 11.4 s cold, 3.1 s partly cached and 7.7 s when the context changes; writing the answer costs under 1 s. So the wait is prompt processing, not generation. In the app, a request takes 14 to 18 s today. Planned changes, with measured gains:
-   - Put the fixed text (rules, examples) first and the changing text (environment, terminal output, instruction) last, so Ollama can reuse its cache: about 8.6 s to 4.5 s.
-   - Trim the context: cap the file listing to about 15 names and the terminal output to the last 2 to 3 lines, and include the listing only when the request mentions files: about 4.5 s to 1.6 s.
-   - Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. Send `keep_alive` so it stays loaded.
-   - Optional: 5 examples instead of 10 (saves about 125 tokens). Try `qwen2.5-coder:1.5b` only after the above, since its answers are worse.
-   - Check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
-   - Re-measure afterwards with the real flow, and use `-vv` for the voice WAV dump when tuning Whisper (resampling filter, settings), which still mis-hears some speech.
+   - [x] Put the fixed text (rules, examples) first and the changing text (environment, terminal output, instruction) last, so Ollama can reuse its cache: about 8.6 s to 4.5 s.
+   - [x] Trim the context: cap the file listing to about 15 names and the terminal output to the last 2 to 3 lines, and include the listing only when the request mentions files: about 4.5 s to 1.6 s.
+   - [x] Warm the model with one tiny request at startup, which removes the roughly 11 s cold start. `keep_alive` (30m) is sent so it stays loaded.
+   - [x] `LLM request took` is logged for each request (`call_llm`), and `LLM warm-up finished` for the warm-up.
+   - Direct-API measurement (new prompt, about 500 prompt tokens, CPU-only, `qwen2.5-coder:3b`), three different requests in a row: 11.4 s (model not yet loaded), then 2.2 s, then 0.7 s.
+   - [ ] OPEN: re-measure in the real app flow (not yet done; needs an interactive session).
+   - [ ] OPEN: check whether the status line's 4 redraws per second slow Ollama on this CPU-rendered (llvmpipe) window, and lower the rate while waiting if so.
+   - [ ] OPEN, optional: 5 examples instead of 10 (saves about 125 tokens). Try `qwen2.5-coder:1.5b` only after the above, since its answers are worse.
+   - Use `-vv` for the voice WAV dump when tuning Whisper (resampling filter, settings), which still mis-hears some speech.
 2. **Shell hook.** Bash/zsh/fish snippets that record each command, its exit code and where its output starts and ends. Screen scraping cannot tell where the last command ended. This is the Stage 2 shell integration, pulled forward because step 3 needs it.
 3. **Error diagnosis and fix (hotkey).** After a failed command, send the command and its error output to the model and show a one-line explanation plus a proposed fix in the existing preview (still confirm-to-run, still safety-checked). Expect weaker answers from a 3B model, and keep prompts short for latency.
 

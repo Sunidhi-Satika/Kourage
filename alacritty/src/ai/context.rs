@@ -27,6 +27,24 @@ pub(crate) const PROMPT_EXAMPLES: [(&str, &str); 10] = [
     ("show the 10 processes using the most memory", "ps aux --sort=-%mem | head -11"),
 ];
 
+/// Most file names put in the prompt; every extra name costs prompt-processing time.
+const MAX_LISTED_FILES: usize = 15;
+/// Most terminal lines put in the prompt.
+const MAX_OUTPUT_LINES: usize = 3;
+
+/// Words that suggest the request depends on what is in the current directory.
+const FILE_WORDS: [&str; 24] = [
+    "file", "folder", "director", "dir", "here", "this", "current", "ls", "list", "show",
+    "find", "delete", "remove", "rename", "move", "copy", "size", "large", "big", "hidden",
+    "open", "edit", "archive", "zip",
+];
+
+/// Whether the request is likely to need the directory listing.
+fn mentions_files(instruction: &str) -> bool {
+    let lower = instruction.to_lowercase();
+    FILE_WORDS.iter().any(|word| lower.contains(word))
+}
+
 /// Rich environmental context gathered from the active terminal window.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AiContext {
@@ -227,12 +245,25 @@ impl AiContext {
     /// Format the system prompt embedding all rich context.
     ///
     /// Few-shot examples steer small models away from plausible-looking but wrong commands.
+    ///
+    /// Layout matters for speed: Ollama caches the longest identical prompt prefix, so the
+    /// fixed text (role, rules, examples) comes first and the per-request text comes last.
     pub fn format_prompt(&self, instruction: &str) -> String {
         let mut prompt = String::from(
-            "You are Kourage, an intelligent terminal assistant. Convert the user's natural language instruction into a single, valid, raw shell command for the current environment.\n\n"
+            "You are Kourage, an intelligent terminal assistant. Convert the user's natural language instruction into a single, valid, raw shell command for the current environment.\n\n\
+            ### Output Rules:\n\
+            - ONLY return the raw, single-line shell command.\n\
+            - Do NOT include markdown formatting, code fences, or backticks.\n\
+            - Do NOT explain or include conversational text.\n\
+            - Choose the exact command tailored to the current directory, tech stack, and OS.\n"
         );
 
-        prompt.push_str("### Current Environment:\n");
+        prompt.push_str("\n### Examples (GNU/Linux; adapt to the environment below):\n");
+        for (request, command) in PROMPT_EXAMPLES {
+            prompt.push_str(&format!("Instruction: \"{request}\"\nCommand: {command}\n"));
+        }
+
+        prompt.push_str("\n### Current Environment:\n");
 
         if let Some(os) = &self.os {
             prompt.push_str(&format!("- Operating System: {}\n", os));
@@ -250,32 +281,23 @@ impl AiContext {
             prompt.push_str(&format!("- Project / Tech Stack: {}\n", stack));
         }
 
-        if !self.directory_contents.is_empty() {
-            prompt.push_str(&format!("- Files in Directory: {}\n", self.directory_contents.join(", ")));
+        if !self.directory_contents.is_empty() && mentions_files(instruction) {
+            let listing: Vec<&str> =
+                self.directory_contents.iter().take(MAX_LISTED_FILES).map(String::as_str).collect();
+            prompt.push_str(&format!("- Files in Directory: {}\n", listing.join(", ")));
         }
 
         if let Some(recent_buffer) = &self.recent_terminal_lines {
-            if !recent_buffer.trim().is_empty() {
+            let lines: Vec<&str> = recent_buffer.lines().filter(|l| !l.trim().is_empty()).collect();
+            if !lines.is_empty() {
+                let tail = &lines[lines.len().saturating_sub(MAX_OUTPUT_LINES)..];
                 prompt.push_str("\n### Recent Terminal Output (for context / error diagnosis):\n```\n");
-                prompt.push_str(recent_buffer);
+                prompt.push_str(&tail.join("\n"));
                 prompt.push_str("\n```\n");
             }
         }
 
-        prompt.push_str("\n### Examples (GNU/Linux; adapt to the environment above):\n");
-        for (request, command) in PROMPT_EXAMPLES {
-            prompt.push_str(&format!("Instruction: \"{request}\"\nCommand: {command}\n"));
-        }
-
-        prompt.push_str(&format!(
-            "\n### User Instruction:\n\"{}\"\n\n\
-            ### Output Rules:\n\
-            - ONLY return the raw, single-line shell command.\n\
-            - Do NOT include markdown formatting, code fences, or backticks.\n\
-            - Do NOT explain or include conversational text.\n\
-            - Choose the exact command tailored to the current directory, tech stack, and OS.\n",
-            instruction
-        ));
+        prompt.push_str(&format!("\n### User Instruction:\n\"{instruction}\"\n"));
 
         prompt
     }
@@ -326,6 +348,67 @@ mod tests {
         let instruction = prompt.find("### User Instruction").expect("instruction section");
         assert!(examples < instruction);
         assert!(prompt.contains("df -h"));
+    }
+
+    #[test]
+    fn prompt_puts_fixed_text_before_changing_text() {
+        // Ollama reuses its cache for an identical prefix, so everything that never changes
+        // must come first and everything that varies per request must come last.
+        let context = AiContext {
+            cwd: Some("/work".into()),
+            os: Some("Linux".into()),
+            shell: Some("bash".into()),
+            recent_terminal_lines: Some("some output".into()),
+            ..Default::default()
+        };
+        let prompt = context.format_prompt("do the thing");
+        let rules = prompt.find("### Output Rules").unwrap();
+        let examples = prompt.find("### Examples").unwrap();
+        let env = prompt.find("### Current Environment").unwrap();
+        let output = prompt.find("### Recent Terminal Output").unwrap();
+        let instruction = prompt.find("### User Instruction").unwrap();
+        assert!(rules < examples && examples < env && env < output && output < instruction);
+    }
+
+    #[test]
+    fn fixed_prefix_is_identical_across_requests() {
+        let a = AiContext { cwd: Some("/a".into()), ..Default::default() }.format_prompt("one");
+        let b = AiContext { cwd: Some("/b".into()), ..Default::default() }.format_prompt("two");
+        let end = a.find("### Current Environment").unwrap();
+        assert_eq!(a[..end], b[..b.find("### Current Environment").unwrap()]);
+    }
+
+    #[test]
+    fn file_listing_only_when_request_mentions_files() {
+        let context = AiContext {
+            directory_contents: vec!["Cargo.toml".into(), "src/".into()],
+            ..Default::default()
+        };
+        assert!(!context.format_prompt("what is my ip address").contains("Files in Directory"));
+        assert!(context.format_prompt("delete the large files here").contains("Files in Directory"));
+        assert!(context.format_prompt("show my folders").contains("Files in Directory"));
+    }
+
+    #[test]
+    fn file_listing_is_capped() {
+        let context = AiContext {
+            directory_contents: (0..35).map(|i| format!("f{i:02}")).collect(),
+            ..Default::default()
+        };
+        let prompt = context.format_prompt("list the files");
+        assert!(prompt.contains("f14"));
+        assert!(!prompt.contains("f15"));
+    }
+
+    #[test]
+    fn terminal_output_is_limited_to_the_last_lines() {
+        let context = AiContext {
+            recent_terminal_lines: Some("l1\nl2\nl3\nl4\nl5".into()),
+            ..Default::default()
+        };
+        let prompt = context.format_prompt("x");
+        assert!(prompt.contains("l3\nl4\nl5"));
+        assert!(!prompt.contains("l2"));
     }
 
     #[test]

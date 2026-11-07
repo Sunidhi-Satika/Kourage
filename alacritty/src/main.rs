@@ -169,6 +169,9 @@ fn alacritty(mut options: Options) -> Result<(), Box<dyn Error>> {
     // Update the log level from config.
     log::set_max_level(config.debug.log_level);
 
+    // Load the model in the background so the first prompt isn't a cold start.
+    voice::warm_up_llm(&config.ai);
+
     // Set tty environment variables.
     tty::setup_env();
 
