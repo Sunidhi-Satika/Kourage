@@ -21,17 +21,26 @@ const MAX_LISTED_FILES: usize = 15;
 /// Most terminal lines put in the prompt.
 const MAX_OUTPUT_LINES: usize = 3;
 
-/// Words that suggest the request depends on what is in the current directory.
-const FILE_WORDS: [&str; 24] = [
-    "file", "folder", "director", "dir", "here", "this", "current", "ls", "list", "show",
-    "find", "delete", "remove", "rename", "move", "copy", "size", "large", "big", "hidden",
-    "open", "edit", "archive", "zip",
+/// Whole words that suggest the request depends on what is in the current directory.
+const FILE_WORDS: [&str; 17] = [
+    "dir", "ls", "here", "find", "delete", "remove", "rename", "move", "copy", "size", "large",
+    "big", "hidden", "open", "edit", "archive", "zip",
 ];
 
+/// Word prefixes that count too (so "files", "folders", "directories" match).
+const FILE_STEMS: [&str; 3] = ["file", "folder", "director"];
+
 /// Whether the request is likely to need the directory listing.
+///
+/// Matches whole tokens, not substrings, so "also" or "tools" do not trigger on "ls".
 fn mentions_files(instruction: &str) -> bool {
-    let lower = instruction.to_lowercase();
-    FILE_WORDS.iter().any(|word| lower.contains(word))
+    instruction
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            FILE_WORDS.contains(&token) || FILE_STEMS.iter().any(|stem| token.starts_with(stem))
+        })
 }
 
 impl AiContext {
@@ -194,6 +203,21 @@ mod tests {
     }
 
     #[test]
+    fn file_listing_matches_whole_words_only() {
+        let context = AiContext {
+            directory_contents: vec!["Cargo.toml".into(), "src/".into()],
+            ..Default::default()
+        };
+        let listed = |req: &str| context.format_prompt(req).contains("Files in Directory");
+        for req in ["also check the results", "what tools are installed", "what else is running"] {
+            assert!(!listed(req), "listing wrongly included for {req:?}");
+        }
+        for req in ["ls", "what is in here", "delete the big ones", "show my folders", "rename the file"] {
+            assert!(listed(req), "listing missing for {req:?}");
+        }
+    }
+
+    #[test]
     fn file_listing_is_capped() {
         let context = AiContext {
             directory_contents: (0..35).map(|i| format!("f{i:02}")).collect(),
@@ -233,6 +257,10 @@ mod tests {
             let prompt = context.format_prompt(instruction);
             let section = format!("\n### User Instruction:\n\"{instruction}\"\n");
             assert!(prompt.ends_with(&section), "instruction section missing for {instruction:?}");
+            let rules = prompt.find("### Output Rules").unwrap();
+            let fixed = &prompt[..prompt.len() - section.len()];
+            assert_eq!(fixed.matches("### Output Rules").count(), 1, "{instruction:?}");
+            assert!(rules < prompt.find("### Current Environment").unwrap());
         }
     }
 
@@ -240,7 +268,7 @@ mod tests {
     fn every_example_is_a_safe_single_line_command() {
         for (request, command) in PROMPT_EXAMPLES {
             assert!(!request.is_empty());
-            assert_eq!(crate::reply::require_single_line(command).unwrap(), *command);
+            assert_eq!(crate::reply::finalize_reply(command).unwrap(), *command);
             assert!(!command.contains('`'), "backticks in example: {command}");
             assert!(!crate::safety::is_destructive_command(command), "unsafe example: {command}");
         }
