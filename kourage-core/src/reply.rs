@@ -36,13 +36,43 @@ pub fn require_single_line(cmd: &str) -> Result<String, String> {
     }
 }
 
-/// Turn a raw model reply into the one command to preview, or explain why it can't be used.
-pub fn finalize_llm_reply(raw: &str) -> Result<String, String> {
-    let cmd = require_single_line(&clean_llm_reply(raw))?;
-    if cmd.is_empty() {
-        return Err("The model returned an empty command. Try rephrasing.".to_string());
+/// Why a raw model reply cannot be used as a command. `Display` is the user-facing message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyError {
+    /// Nothing usable was left after cleaning.
+    Empty,
+    /// The reply held this many (non-blank) lines; a single command is required.
+    MultiLine(usize),
+}
+
+impl std::fmt::Display for ReplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "The model returned an empty command. Try rephrasing."),
+            Self::MultiLine(n) => write!(
+                f,
+                "The model returned {n} lines but a single command is required. Try rephrasing."
+            ),
+        }
     }
-    Ok(cmd)
+}
+
+impl std::error::Error for ReplyError {}
+
+/// Turn a raw model reply into the one command to preview, or say why it can't be used.
+pub fn finalize_reply(raw: &str) -> Result<String, ReplyError> {
+    let cleaned = clean_llm_reply(raw);
+    let lines: Vec<&str> = cleaned.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    match lines.as_slice() {
+        [only] => Ok((*only).to_string()),
+        [] => Err(ReplyError::Empty),
+        many => Err(ReplyError::MultiLine(many.len())),
+    }
+}
+
+/// String-error form of [`finalize_reply`].
+pub fn finalize_llm_reply(raw: &str) -> Result<String, String> {
+    finalize_reply(raw).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
